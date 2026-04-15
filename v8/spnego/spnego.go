@@ -19,13 +19,23 @@ type SPNEGO struct {
 	serviceSettings *service.Settings
 	client          *client.Client
 	spn             string
+	bindings        *gssapi.ChannelBindings // Optional channel bindings for CBT support
 }
 
-// SPNEGOClient configures the SPNEGO mechanism suitable for client side use.
+// SPNEGOClient configures the SPNEGO mechanism for client-side use
+// without channel bindings. Use SPNEGOClientWithBindings for CBT.
 func SPNEGOClient(cl *client.Client, spn string) *SPNEGO {
+	return SPNEGOClientWithBindings(cl, spn, nil)
+}
+
+// SPNEGOClientWithBindings configures the SPNEGO mechanism for client-side
+// use with optional channel bindings. When bindings is non-nil its MD5
+// hash is embedded in the authenticator checksum per RFC 4121 §4.1.1.
+func SPNEGOClientWithBindings(cl *client.Client, spn string, bindings *gssapi.ChannelBindings) *SPNEGO {
 	s := new(SPNEGO)
 	s.client = cl
 	s.spn = spn
+	s.bindings = bindings
 	s.serviceSettings = service.NewSettings(nil, service.SName(spn))
 	return s
 }
@@ -47,13 +57,14 @@ func (s *SPNEGO) AcquireCred() error {
 	return s.client.AffirmLogin()
 }
 
-// InitSecContext is the GSS-API method for the client to a generate a context token to the service via Kerberos.
+// InitSecContext is the GSS-API method for the client to generate a context token to the service via Kerberos.
+// If channel bindings were configured via SPNEGOClientWithBindings, they are included in the token.
 func (s *SPNEGO) InitSecContext() (gssapi.ContextToken, error) {
 	tkt, key, err := s.client.GetServiceTicket(s.spn)
 	if err != nil {
 		return &SPNEGOToken{}, err
 	}
-	negTokenInit, err := NewNegTokenInitKRB5(s.client, tkt, key)
+	negTokenInit, err := NewNegTokenInitKRB5WithBindings(s.client, tkt, key, s.bindings)
 	if err != nil {
 		return &SPNEGOToken{}, fmt.Errorf("could not create NegTokenInit: %v", err)
 	}

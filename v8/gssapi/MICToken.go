@@ -151,7 +151,12 @@ func (mt *MICToken) Unmarshal(b []byte, expectFromAcceptor bool) error {
 
 	mt.Flags = flags
 	mt.SndSeqNum = binary.BigEndian.Uint64(b[8:16])
-	mt.Checksum = b[micHdrLen:]
+	// Copy the checksum out of the caller's input buffer so the token
+	// does not alias memory the caller may reuse for the next receive.
+	// Matches WrapToken.Unmarshal's defensive copy.
+	trailer := b[micHdrLen:]
+	mt.Checksum = make([]byte, len(trailer))
+	copy(mt.Checksum, trailer)
 	return nil
 }
 

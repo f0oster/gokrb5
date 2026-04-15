@@ -1,9 +1,11 @@
 package spnego
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/jcmturner/gofork/encoding/asn1"
 	"github.com/jcmturner/gokrb5/v8/client"
@@ -46,7 +48,7 @@ func TestKRB5Token_newAuthenticatorChksum(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error decoding KRB5Token hex: %v", err)
 	}
-	cb := newAuthenticatorChksum([]int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf})
+	cb := newAuthenticatorChksum([]int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf}, nil, nil)
 	assert.Equal(t, b, cb, "SPNEGO Authenticator checksum not as expected")
 }
 
@@ -57,7 +59,7 @@ func TestKRB5Token_newAuthenticatorWithSubkeyGeneration(t *testing.T) {
 	creds.SetCName(types.PrincipalName{NameType: nametype.KRB_NT_PRINCIPAL, NameString: testdata.TEST_PRINCIPALNAME_NAMESTRING})
 	var etypeID int32 = 18
 	keyLen := 32 // etypeID 18 refers to AES256 -> 32 bytes key
-	a, err := krb5TokenAuthenticator(creds, []int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf})
+	a, err := krb5TokenAuthenticator(creds, []int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf}, nil, nil)
 	if err != nil {
 		t.Fatalf("Error creating authenticator: %v", err)
 	}
@@ -85,7 +87,7 @@ func TestKRB5Token_newAuthenticator(t *testing.T) {
 	t.Parallel()
 	creds := credentials.New("hftsai", testdata.TEST_REALM)
 	creds.SetCName(types.PrincipalName{NameType: nametype.KRB_NT_PRINCIPAL, NameString: testdata.TEST_PRINCIPALNAME_NAMESTRING})
-	a, err := krb5TokenAuthenticator(creds, []int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf})
+	a, err := krb5TokenAuthenticator(creds, []int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf}, nil, nil)
 	if err != nil {
 		t.Fatalf("Error creating authenticator: %v", err)
 	}
@@ -99,6 +101,139 @@ func TestKRB5Token_newAuthenticator(t *testing.T) {
 	assert.Condition(t, assert.Comparison(func() bool {
 		return a.SeqNumber <= math.MaxUint32
 	}))
+}
+
+func TestKRB5Token_newAuthenticatorChksumWithDelegation(t *testing.T) {
+	t.Parallel()
+	// Per RFC 4121 §4.1.1.1, when a forwarded credential is present
+	// the checksum grows beyond 24 bytes: DlgOpt(2) + Dlgth(2) + Deleg(N).
+	// DlgOpt is 1, Dlgth is the length of Deleg in little-endian.
+	delegDER := []byte{0x30, 0x82, 0x01, 0x00, 0x00, 0x01, 0x02, 0x03} // synthetic DER bytes
+	chksum := newAuthenticatorChksum(
+		[]int{gssapi.ContextFlagInteg, gssapi.ContextFlagDeleg},
+		nil,
+		delegDER,
+	)
+
+	// Base 24 bytes (Lgth + Bnd + Flags) + tail (DlgOpt 2 + Dlgth 2 + Deleg len)
+	wantLen := 24 + 4 + len(delegDER)
+	assert.Equal(t, wantLen, len(chksum), "checksum length with delegation tail")
+
+	// Flags must include ContextFlagDeleg.
+	gssFlags := binary.LittleEndian.Uint32(chksum[20:24])
+	assert.NotZero(t, gssFlags&uint32(gssapi.ContextFlagDeleg), "ContextFlagDeleg must be set")
+
+	// DlgOpt = 1 (2 bytes, little-endian).
+	dlgOpt := binary.LittleEndian.Uint16(chksum[24:26])
+	assert.Equal(t, uint16(1), dlgOpt, "DlgOpt must be 1 when a credential is supplied")
+
+	// Dlgth = len(delegDER) (2 bytes, little-endian).
+	dlgth := binary.LittleEndian.Uint16(chksum[26:28])
+	assert.Equal(t, uint16(len(delegDER)), dlgth, "Dlgth must equal len(Deleg)")
+
+	// Deleg bytes follow verbatim.
+	assert.Equal(t, delegDER, chksum[28:], "Deleg must carry the supplied DER bytes")
+}
+
+func TestKRB5Token_newAuthenticatorChksumDelegationForcesFlag(t *testing.T) {
+	t.Parallel()
+	// Supplying delegationCredDER must force ContextFlagDeleg on in
+	// the flags field, even if the caller forgot to pass it.
+	delegDER := []byte{0xAA, 0xBB}
+	chksum := newAuthenticatorChksum(
+		[]int{gssapi.ContextFlagInteg},
+		nil,
+		delegDER,
+	)
+	gssFlags := binary.LittleEndian.Uint32(chksum[20:24])
+	assert.NotZero(t, gssFlags&uint32(gssapi.ContextFlagDeleg),
+		"delegation credential must imply ContextFlagDeleg")
+}
+
+func TestKRB5Token_newAuthenticatorChksumWithBindings(t *testing.T) {
+	t.Parallel()
+	// Test that channel bindings are embedded in the checksum
+	cb := &gssapi.ChannelBindings{
+		ApplicationData: []byte("tls-server-end-point:test-hash"),
+	}
+	chksum := newAuthenticatorChksum([]int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf}, cb, nil)
+
+	// Checksum should be 24 bytes (or 28 with delegation)
+	assert.Equal(t, 24, len(chksum), "Checksum length not as expected")
+
+	// Bytes 0-3 should be 16 (length of MD5 hash)
+	assert.Equal(t, byte(16), chksum[0], "Lgth field not as expected")
+	assert.Equal(t, byte(0), chksum[1], "Lgth field not as expected")
+	assert.Equal(t, byte(0), chksum[2], "Lgth field not as expected")
+	assert.Equal(t, byte(0), chksum[3], "Lgth field not as expected")
+
+	// Bytes 4-19 should contain the MD5 hash of the channel bindings (non-zero)
+	expectedHash := cb.MD5Hash()
+	for i := 0; i < 16; i++ {
+		assert.Equal(t, expectedHash[i], chksum[4+i], "Channel binding hash byte %d not as expected", i)
+	}
+
+	// Compare with nil bindings - bytes 4-19 should be zero
+	chksumNil := newAuthenticatorChksum([]int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf}, nil, nil)
+	for i := 4; i < 20; i++ {
+		assert.Equal(t, byte(0), chksumNil[i], "Nil bindings should have zero in byte %d", i)
+	}
+
+	// The two checksums should differ in bytes 4-19
+	assert.NotEqual(t, chksum[4:20], chksumNil[4:20], "Checksums with and without bindings should differ in Bnd field")
+
+	// Flags (bytes 20-23) should be the same
+	assert.Equal(t, chksum[20:24], chksumNil[20:24], "Flags should be the same regardless of bindings")
+}
+
+func TestKRB5Token_Verify_APRep_HappyPath(t *testing.T) {
+	t.Parallel()
+	apRep := buildTestAPRep(t, testdata.MarshaledKRB5ap_rep_enc_part)
+	auth := matchingAuthenticator(t)
+
+	tok := &KRB5Token{
+		tokID: []byte{0x02, 0x00}, // AP-REP
+		APRep: apRep,
+	}
+	tok.SetAPRepVerification(auth, testAPRepKey)
+	ok, status := tok.Verify()
+	assert.True(t, ok)
+	assert.Equal(t, gssapi.StatusComplete, status.Code)
+	if assert.NotNil(t, tok.EncAPRepPart) {
+		assert.Equal(t, testAPRepCusec, tok.EncAPRepPart.Cusec)
+		assert.Equal(t, testAPRepSeqNumber, tok.EncAPRepPart.SequenceNumber)
+	}
+}
+
+func TestKRB5Token_Verify_APRep_InputsNotSet(t *testing.T) {
+	t.Parallel()
+	apRep := buildTestAPRep(t, testdata.MarshaledKRB5ap_rep_enc_part)
+	tok := &KRB5Token{
+		tokID: []byte{0x02, 0x00},
+		APRep: apRep,
+	}
+	// SetAPRepVerification intentionally not called.
+	ok, status := tok.Verify()
+	assert.False(t, ok)
+	assert.Equal(t, gssapi.StatusFailure, status.Code)
+	assert.Contains(t, status.Message, "SetAPRepVerification")
+}
+
+func TestKRB5Token_Verify_APRep_CTimeMismatch(t *testing.T) {
+	t.Parallel()
+	apRep := buildTestAPRep(t, testdata.MarshaledKRB5ap_rep_enc_part)
+	auth := matchingAuthenticator(t)
+	auth.CTime = auth.CTime.Add(time.Second) // drift past the second-precision floor
+
+	tok := &KRB5Token{
+		tokID: []byte{0x02, 0x00},
+		APRep: apRep,
+	}
+	tok.SetAPRepVerification(auth, testAPRepKey)
+	ok, status := tok.Verify()
+	assert.False(t, ok)
+	assert.Equal(t, gssapi.StatusDefectiveCredential, status.Code)
+	assert.Contains(t, status.Message, "ctime")
 }
 
 func TestNewAPREQKRB5Token_and_Marshal(t *testing.T) {

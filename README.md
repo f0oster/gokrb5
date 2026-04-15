@@ -1,5 +1,33 @@
 # gokrb5
 
+Personal fork of [jcmturner/gokrb5](https://github.com/jcmturner/gokrb5) with a handful of features for working with Active Directory.
+
+## Features:
+
+- GSS-API per-message tokens (Wrap and MIC), integrity-only and confidential. RFC 4121.
+- AP-REP mutual-authentication verification. RFC 4120.
+- SASL/GSSAPI security-layer negotiation. RFC 4752.
+- TLS channel bindings (`tls-server-end-point`). RFC 5929.
+- Authenticator subkey generation for GSS per-message tokens. RFC 4121.
+- Credential delegation through the GSS authenticator checksum. RFC 4121.
+
+I've tested the fork against Active Directory (Windows Server 2022). MIT and Heimdal KDCs are untested.
+
+### Standards / RFCs referenced
+
+* [RFC 2743](https://tools.ietf.org/html/rfc2743) - GSS-API v2, Update 1
+* [RFC 2744](https://tools.ietf.org/html/rfc2744) - GSS-API v2 C-bindings
+* [RFC 4422](https://tools.ietf.org/html/rfc4422) - Simple Authentication and Security Layer (SASL)
+* [RFC 4752](https://tools.ietf.org/html/rfc4752) - The Kerberos V5 ("GSSAPI") SASL Mechanism
+* [RFC 5929](https://tools.ietf.org/html/rfc5929) - Channel Bindings for TLS
+* [\[MS-KILE\] Kerberos Protocol Extensions](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-kile/2a32282e-dd48-4ad9-a542-609804b02cc9) - particularly §3.1.1.2 (Cryptographic Material), §3.2.1 (Abstract Data Model), and §3.4.5.4.1 (Kerberos Binding of GSS_WrapEx).
+
+The remainder of this README is the original [jcmturner/gokrb5](https://github.com/jcmturner/gokrb5) README.
+
+---
+
+# gokrb5
+
 It is recommended to use the latest version: [![Version](https://img.shields.io/github/release/jcmturner/gokrb5.svg)](https://github.com/jcmturner/gokrb5/releases)
 
 Development will be focused on the latest major version. New features will only be targeted at this version.
