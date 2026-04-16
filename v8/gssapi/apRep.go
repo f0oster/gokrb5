@@ -1,4 +1,4 @@
-package spnego
+package gssapi
 
 import (
 	"fmt"
@@ -28,11 +28,6 @@ func VerifyAPRep(apRep messages.APRep, sessionKey types.EncryptionKey, sentAuth 
 		return nil, fmt.Errorf("unmarshal EncAPRepPart: %w", err)
 	}
 
-	// Kerberos ASN.1 GeneralizedTime carries second precision only; any
-	// sub-second component of the client-generated Authenticator ctime
-	// is dropped at encode time and lives in cusec instead. Truncate the
-	// sent-side ctime to the same precision before comparing so a
-	// legitimate AP-REP from time.Now()-based clients doesn't falsely fail.
 	sentCTime := sentAuth.CTime.Truncate(time.Second)
 	if !encPart.CTime.Equal(sentCTime) {
 		return nil, fmt.Errorf("AP-REP ctime %v does not match authenticator ctime %v",

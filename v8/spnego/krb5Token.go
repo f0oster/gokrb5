@@ -2,7 +2,6 @@ package spnego
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -10,12 +9,9 @@ import (
 	"github.com/jcmturner/gofork/encoding/asn1"
 	"github.com/jcmturner/gokrb5/v8/asn1tools"
 	"github.com/jcmturner/gokrb5/v8/client"
-	"github.com/jcmturner/gokrb5/v8/credentials"
 	"github.com/jcmturner/gokrb5/v8/crypto"
 	"github.com/jcmturner/gokrb5/v8/gssapi"
-	"github.com/jcmturner/gokrb5/v8/iana/chksumtype"
 	"github.com/jcmturner/gokrb5/v8/iana/msgtype"
-	"github.com/jcmturner/gokrb5/v8/krberror"
 	"github.com/jcmturner/gokrb5/v8/messages"
 	"github.com/jcmturner/gokrb5/v8/service"
 	"github.com/jcmturner/gokrb5/v8/types"
@@ -150,7 +146,7 @@ func (m *KRB5Token) Verify() (bool, gssapi.Status) {
 		if len(m.sessionKey.KeyValue) == 0 {
 			return false, gssapi.Status{Code: gssapi.StatusFailure, Message: "AP-REP verification inputs not set; call SetAPRepVerification before Verify"}
 		}
-		encPart, err := VerifyAPRep(m.APRep, m.sessionKey, m.sentAuth)
+		encPart, err := gssapi.VerifyAPRep(m.APRep, m.sessionKey, m.sentAuth)
 		if err != nil {
 			return false, gssapi.Status{Code: gssapi.StatusDefectiveCredential, Message: err.Error()}
 		}
@@ -221,7 +217,7 @@ func NewKRB5TokenAPREQWithBindings(cl *client.Client, tkt messages.Ticket, sessi
 	tb, _ := hex.DecodeString(TOK_ID_KRB_AP_REQ)
 	m.tokID = tb
 
-	auth, err := krb5TokenAuthenticator(cl.Credentials, GSSAPIFlags, bindings, delegationCredDER)
+	auth, err := gssapi.NewGSSAuthenticator(cl.Credentials, GSSAPIFlags, bindings, delegationCredDER)
 	if err != nil {
 		return m, err
 	}
@@ -250,78 +246,3 @@ func NewKRB5TokenAPREQWithBindings(cl *client.Client, tkt messages.Ticket, sessi
 	return m, nil
 }
 
-// krb5TokenAuthenticator creates a new kerberos authenticator for kerberos MechToken.
-// bindings and delegationCredDER can both be nil.
-func krb5TokenAuthenticator(creds *credentials.Credentials, flags []int, bindings *gssapi.ChannelBindings, delegationCredDER []byte) (types.Authenticator, error) {
-	// RFC 4121 §4.1.1
-	auth, err := types.NewAuthenticator(creds.Domain(), creds.CName())
-	if err != nil {
-		return auth, krberror.Errorf(err, krberror.KRBMsgError, "error generating new authenticator")
-	}
-	auth.Cksum = types.Checksum{
-		CksumType: chksumtype.GSSAPI,
-		Checksum:  newAuthenticatorChksum(flags, bindings, delegationCredDER),
-	}
-	return auth, nil
-}
-
-// newAuthenticatorChksum builds the RFC 4121 §4.1.1.1 GSS authenticator
-// checksum. The layout is:
-//
-//	Byte 0..3   Lgth         length of Bnd (always 16)
-//	Byte 4..19  Bnd          MD5 hash of the serialized channel bindings
-//	Byte 20..23 Flags        GSS context establishment flags
-//	Byte 24..25 DlgOpt       delegation option (1 if delegation follows, 0 otherwise)
-//	Byte 26..27 Dlgth        length of Deleg in octets
-//	Byte 28..   Deleg        DER-encoded KRB_CRED forwarded TGT
-//
-// When bindings is nil the Bnd field is all zeros. When delegationCredDER
-// is non-nil, DlgOpt=1 and Deleg contains the caller-supplied bytes;
-// ContextFlagDeleg is forced on in the flags field to match. When
-// delegationCredDER is nil but ContextFlagDeleg is set in flags, a
-// zero-length DlgOpt/Dlgth pair is appended for compatibility with
-// acceptors that insist on the full checksum length.
-func newAuthenticatorChksum(flags []int, bindings *gssapi.ChannelBindings, delegationCredDER []byte) []byte {
-	a := make([]byte, 24)
-
-	// Lgth field - always 16 (the size of MD5 hash)
-	binary.LittleEndian.PutUint32(a[:4], 16)
-
-	// Bnd field - MD5 hash of channel bindings or zeros
-	if bindings != nil {
-		hash := bindings.MD5Hash()
-		copy(a[4:20], hash[:])
-	}
-
-	// Determine the GSS flags field and whether ContextFlagDeleg is set.
-	var gssFlags uint32
-	var wantDeleg bool
-	for _, i := range flags {
-		gssFlags |= uint32(i)
-		if i == gssapi.ContextFlagDeleg {
-			wantDeleg = true
-		}
-	}
-	// Force the delegation flag on when a credential is supplied, even
-	// if the caller forgot to pass ContextFlagDeleg.
-	if delegationCredDER != nil {
-		gssFlags |= uint32(gssapi.ContextFlagDeleg)
-		wantDeleg = true
-	}
-	binary.LittleEndian.PutUint32(a[20:24], gssFlags)
-
-	if !wantDeleg {
-		return a
-	}
-
-	// Delegation tail. DlgOpt = 1 when a credential is present, else 0.
-	// Dlgth = len(Deleg). Per RFC 4121 DlgOpt and Dlgth are each 2 octets
-	// little-endian.
-	tail := make([]byte, 4+len(delegationCredDER))
-	if delegationCredDER != nil {
-		binary.LittleEndian.PutUint16(tail[0:2], 1)
-	}
-	binary.LittleEndian.PutUint16(tail[2:4], uint16(len(delegationCredDER)))
-	copy(tail[4:], delegationCredDER)
-	return append(a, tail...)
-}

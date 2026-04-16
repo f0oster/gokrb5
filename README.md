@@ -1,6 +1,6 @@
 # gokrb5
 
-Personal fork of [jcmturner/gokrb5](https://github.com/jcmturner/gokrb5) with a handful of features for working with Active Directory.
+Personal fork of [jcmturner/gokrb5](https://github.com/jcmturner/gokrb5) with the addition of channel binding, SASL message wrapping, and a higher-level API for GSS context establishment.
 
 ## Features:
 
@@ -11,7 +11,7 @@ Personal fork of [jcmturner/gokrb5](https://github.com/jcmturner/gokrb5) with a 
 - Authenticator subkey generation for GSS per-message tokens. RFC 4121.
 - Credential delegation through the GSS authenticator checksum. RFC 4121.
 
-I've tested the fork against Active Directory (Windows Server 2022). MIT and Heimdal KDCs are untested.
+Tested against Active Directory (Windows Server 2022) and FreeIPA (MIT KDC).
 
 ### Standards / RFCs referenced
 

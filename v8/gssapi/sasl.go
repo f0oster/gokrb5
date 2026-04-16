@@ -2,6 +2,7 @@ package gssapi
 
 import (
 	"fmt"
+	"strings"
 )
 
 // SASL/GSSAPI security layer flags per RFC 4752 §3.1.
@@ -90,6 +91,7 @@ func BuildSASLClientToken(ctx *SecurityContext, resp SASLClientResponse) ([]byte
 	if err := validateSASLClientResponse(resp); err != nil {
 		return nil, err
 	}
+	ctx.Confidential = resp.ChosenLayer == SASLSecurityConfidential
 	payload := make([]byte, 4+len(resp.AuthzID))
 	payload[0] = resp.ChosenLayer
 	payload[1] = byte(resp.MaxBufferSize >> 16)
@@ -120,4 +122,23 @@ func validateSASLClientResponse(resp SASLClientResponse) error {
 // SupportsLayer checks if the server offer includes the specified security layer.
 func (o *SASLServerOffer) SupportsLayer(layer byte) bool {
 	return (o.SupportedLayers & layer) != 0
+}
+
+// DescribeSASLLayers renders a security-layer bitmask as a
+// "none|integrity|confidentiality" string.
+func DescribeSASLLayers(mask byte) string {
+	var parts []string
+	if mask&SASLSecurityNone != 0 {
+		parts = append(parts, "none")
+	}
+	if mask&SASLSecurityIntegrity != 0 {
+		parts = append(parts, "integrity")
+	}
+	if mask&SASLSecurityConfidential != 0 {
+		parts = append(parts, "confidentiality")
+	}
+	if len(parts) == 0 {
+		return fmt.Sprintf("0x%02x", mask)
+	}
+	return strings.Join(parts, "|")
 }

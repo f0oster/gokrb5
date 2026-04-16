@@ -42,24 +42,24 @@ func TestKRB5Token_Unmarshal(t *testing.T) {
 	assert.Equal(t, int32(18), mt.APReq.EncryptedAuthenticator.EType, "Authenticator within AP_REQ does not have the etype expected.")
 }
 
-func TestKRB5Token_newAuthenticatorChksum(t *testing.T) {
+func TestKRB5Token_BuildGSSChecksum(t *testing.T) {
 	t.Parallel()
 	b, err := hex.DecodeString(AuthChksum)
 	if err != nil {
 		t.Fatalf("Error decoding KRB5Token hex: %v", err)
 	}
-	cb := newAuthenticatorChksum([]int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf}, nil, nil)
+	cb := gssapi.BuildGSSChecksum([]int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf}, nil, nil)
 	assert.Equal(t, b, cb, "SPNEGO Authenticator checksum not as expected")
 }
 
 // Test with explicit subkey generation.
-func TestKRB5Token_newAuthenticatorWithSubkeyGeneration(t *testing.T) {
+func TestKRB5Token_NewGSSAuthenticatorWithSubkeyGeneration(t *testing.T) {
 	t.Parallel()
 	creds := credentials.New("hftsai", testdata.TEST_REALM)
 	creds.SetCName(types.PrincipalName{NameType: nametype.KRB_NT_PRINCIPAL, NameString: testdata.TEST_PRINCIPALNAME_NAMESTRING})
 	var etypeID int32 = 18
 	keyLen := 32 // etypeID 18 refers to AES256 -> 32 bytes key
-	a, err := krb5TokenAuthenticator(creds, []int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf}, nil, nil)
+	a, err := gssapi.NewGSSAuthenticator(creds, []int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf}, nil, nil)
 	if err != nil {
 		t.Fatalf("Error creating authenticator: %v", err)
 	}
@@ -83,11 +83,11 @@ func TestKRB5Token_newAuthenticatorWithSubkeyGeneration(t *testing.T) {
 }
 
 // Test without subkey generation.
-func TestKRB5Token_newAuthenticator(t *testing.T) {
+func TestKRB5Token_NewGSSAuthenticator(t *testing.T) {
 	t.Parallel()
 	creds := credentials.New("hftsai", testdata.TEST_REALM)
 	creds.SetCName(types.PrincipalName{NameType: nametype.KRB_NT_PRINCIPAL, NameString: testdata.TEST_PRINCIPALNAME_NAMESTRING})
-	a, err := krb5TokenAuthenticator(creds, []int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf}, nil, nil)
+	a, err := gssapi.NewGSSAuthenticator(creds, []int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf}, nil, nil)
 	if err != nil {
 		t.Fatalf("Error creating authenticator: %v", err)
 	}
@@ -103,13 +103,13 @@ func TestKRB5Token_newAuthenticator(t *testing.T) {
 	}))
 }
 
-func TestKRB5Token_newAuthenticatorChksumWithDelegation(t *testing.T) {
+func TestKRB5Token_BuildGSSChecksumWithDelegation(t *testing.T) {
 	t.Parallel()
 	// Per RFC 4121 §4.1.1.1, when a forwarded credential is present
 	// the checksum grows beyond 24 bytes: DlgOpt(2) + Dlgth(2) + Deleg(N).
 	// DlgOpt is 1, Dlgth is the length of Deleg in little-endian.
 	delegDER := []byte{0x30, 0x82, 0x01, 0x00, 0x00, 0x01, 0x02, 0x03} // synthetic DER bytes
-	chksum := newAuthenticatorChksum(
+	chksum := gssapi.BuildGSSChecksum(
 		[]int{gssapi.ContextFlagInteg, gssapi.ContextFlagDeleg},
 		nil,
 		delegDER,
@@ -135,12 +135,12 @@ func TestKRB5Token_newAuthenticatorChksumWithDelegation(t *testing.T) {
 	assert.Equal(t, delegDER, chksum[28:], "Deleg must carry the supplied DER bytes")
 }
 
-func TestKRB5Token_newAuthenticatorChksumDelegationForcesFlag(t *testing.T) {
+func TestKRB5Token_BuildGSSChecksumDelegationForcesFlag(t *testing.T) {
 	t.Parallel()
 	// Supplying delegationCredDER must force ContextFlagDeleg on in
 	// the flags field, even if the caller forgot to pass it.
 	delegDER := []byte{0xAA, 0xBB}
-	chksum := newAuthenticatorChksum(
+	chksum := gssapi.BuildGSSChecksum(
 		[]int{gssapi.ContextFlagInteg},
 		nil,
 		delegDER,
@@ -150,13 +150,13 @@ func TestKRB5Token_newAuthenticatorChksumDelegationForcesFlag(t *testing.T) {
 		"delegation credential must imply ContextFlagDeleg")
 }
 
-func TestKRB5Token_newAuthenticatorChksumWithBindings(t *testing.T) {
+func TestKRB5Token_BuildGSSChecksumWithBindings(t *testing.T) {
 	t.Parallel()
 	// Test that channel bindings are embedded in the checksum
 	cb := &gssapi.ChannelBindings{
 		ApplicationData: []byte("tls-server-end-point:test-hash"),
 	}
-	chksum := newAuthenticatorChksum([]int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf}, cb, nil)
+	chksum := gssapi.BuildGSSChecksum([]int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf}, cb, nil)
 
 	// Checksum should be 24 bytes (or 28 with delegation)
 	assert.Equal(t, 24, len(chksum), "Checksum length not as expected")
@@ -174,7 +174,7 @@ func TestKRB5Token_newAuthenticatorChksumWithBindings(t *testing.T) {
 	}
 
 	// Compare with nil bindings - bytes 4-19 should be zero
-	chksumNil := newAuthenticatorChksum([]int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf}, nil, nil)
+	chksumNil := gssapi.BuildGSSChecksum([]int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf}, nil, nil)
 	for i := 4; i < 20; i++ {
 		assert.Equal(t, byte(0), chksumNil[i], "Nil bindings should have zero in byte %d", i)
 	}
