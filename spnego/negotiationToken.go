@@ -6,11 +6,11 @@ import (
 	"fmt"
 
 	"github.com/jcmturner/gofork/encoding/asn1"
-	"gopkg.in/jcmturner/gokrb5.v7/client"
-	"gopkg.in/jcmturner/gokrb5.v7/gssapi"
-	"gopkg.in/jcmturner/gokrb5.v7/messages"
-	"gopkg.in/jcmturner/gokrb5.v7/service"
-	"gopkg.in/jcmturner/gokrb5.v7/types"
+	"github.com/f0oster/gokrb5/client"
+	"github.com/f0oster/gokrb5/gssapi"
+	"github.com/f0oster/gokrb5/messages"
+	"github.com/f0oster/gokrb5/service"
+	"github.com/f0oster/gokrb5/types"
 )
 
 // https://msdn.microsoft.com/en-us/library/ms995330.aspx
@@ -29,7 +29,7 @@ type NegState int
 // NegTokenInit implements Negotiation Token of type Init.
 type NegTokenInit struct {
 	MechTypes      []asn1.ObjectIdentifier
-	ReqFlags       gssapi.ContextFlags
+	ReqFlags       asn1.BitString
 	MechTokenBytes []byte
 	MechListMIC    []byte
 	mechToken      gssapi.ContextToken
@@ -38,7 +38,7 @@ type NegTokenInit struct {
 
 type marshalNegTokenInit struct {
 	MechTypes      []asn1.ObjectIdentifier `asn1:"explicit,tag:0"`
-	ReqFlags       gssapi.ContextFlags     `asn1:"explicit,optional,tag:1"`
+	ReqFlags       asn1.BitString          `asn1:"explicit,optional,tag:1"`
 	MechTokenBytes []byte                  `asn1:"explicit,optional,omitempty,tag:2"`
 	MechListMIC    []byte                  `asn1:"explicit,optional,omitempty,tag:3"` // This field is not used when negotiating Kerberos tokens
 }
@@ -110,7 +110,7 @@ func (n *NegTokenInit) Verify() (bool, gssapi.Status) {
 	// Check if supported mechanisms are in the MechTypeList
 	var mtSupported bool
 	for _, m := range n.MechTypes {
-		if m.Equal(gssapi.OID(gssapi.OIDKRB5)) || m.Equal(gssapi.OID(gssapi.OIDMSLegacyKRB5)) {
+		if m.Equal(gssapi.OIDKRB5.OID()) || m.Equal(gssapi.OIDMSLegacyKRB5.OID()) {
 			if n.mechToken == nil && n.MechTokenBytes == nil {
 				return false, gssapi.Status{Code: gssapi.StatusContinueNeeded}
 			}
@@ -197,7 +197,7 @@ func (n *NegTokenResp) Unmarshal(b []byte) error {
 
 // Verify a Resp/Targ negotiation token
 func (n *NegTokenResp) Verify() (bool, gssapi.Status) {
-	if n.SupportedMech.Equal(gssapi.OID(gssapi.OIDKRB5)) || n.SupportedMech.Equal(gssapi.OID(gssapi.OIDMSLegacyKRB5)) {
+	if n.SupportedMech.Equal(gssapi.OIDKRB5.OID()) || n.SupportedMech.Equal(gssapi.OIDMSLegacyKRB5.OID()) {
 		if n.mechToken == nil && n.ResponseToken == nil {
 			return false, gssapi.Status{Code: gssapi.StatusContinueNeeded}
 		}
@@ -285,9 +285,18 @@ func UnmarshalNegToken(b []byte) (bool, interface{}, error) {
 
 }
 
-// NewNegTokenInitKRB5 creates new Init negotiation token for Kerberos 5
+// NewNegTokenInitKRB5 creates an Init negotiation token for Kerberos 5
+// without channel bindings. Use NewNegTokenInitKRB5WithBindings for CBT.
 func NewNegTokenInitKRB5(cl *client.Client, tkt messages.Ticket, sessionKey types.EncryptionKey) (NegTokenInit, error) {
-	mt, err := NewKRB5TokenAPREQ(cl, tkt, sessionKey, []int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf}, []int{})
+	return NewNegTokenInitKRB5WithBindings(cl, tkt, sessionKey, nil)
+}
+
+// NewNegTokenInitKRB5WithBindings creates an Init negotiation token for
+// Kerberos 5 with optional channel bindings. When bindings is non-nil
+// its MD5 hash is embedded in the authenticator checksum per RFC 4121
+// §4.1.1.
+func NewNegTokenInitKRB5WithBindings(cl *client.Client, tkt messages.Ticket, sessionKey types.EncryptionKey, bindings *gssapi.ChannelBindings) (NegTokenInit, error) {
+	mt, err := NewKRB5TokenAPREQWithBindings(cl, tkt, sessionKey, []int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf}, []int{}, bindings, nil)
 	if err != nil {
 		return NegTokenInit{}, fmt.Errorf("error getting KRB5 token; %v", err)
 	}
@@ -296,7 +305,7 @@ func NewNegTokenInitKRB5(cl *client.Client, tkt messages.Ticket, sessionKey type
 		return NegTokenInit{}, fmt.Errorf("error marshalling KRB5 token; %v", err)
 	}
 	return NegTokenInit{
-		MechTypes:      []asn1.ObjectIdentifier{gssapi.OID(gssapi.OIDKRB5)},
+		MechTypes:      []asn1.ObjectIdentifier{gssapi.OIDKRB5.OID()},
 		MechTokenBytes: mtb,
 	}, nil
 }

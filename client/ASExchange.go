@@ -1,14 +1,14 @@
 package client
 
 import (
-	"gopkg.in/jcmturner/gokrb5.v7/crypto"
-	"gopkg.in/jcmturner/gokrb5.v7/crypto/etype"
-	"gopkg.in/jcmturner/gokrb5.v7/iana/errorcode"
-	"gopkg.in/jcmturner/gokrb5.v7/iana/keyusage"
-	"gopkg.in/jcmturner/gokrb5.v7/iana/patype"
-	"gopkg.in/jcmturner/gokrb5.v7/krberror"
-	"gopkg.in/jcmturner/gokrb5.v7/messages"
-	"gopkg.in/jcmturner/gokrb5.v7/types"
+	"github.com/f0oster/gokrb5/crypto"
+	"github.com/f0oster/gokrb5/crypto/etype"
+	"github.com/f0oster/gokrb5/iana/errorcode"
+	"github.com/f0oster/gokrb5/iana/keyusage"
+	"github.com/f0oster/gokrb5/iana/patype"
+	"github.com/f0oster/gokrb5/krberror"
+	"github.com/f0oster/gokrb5/messages"
+	"github.com/f0oster/gokrb5/types"
 )
 
 // ASExchange performs an AS exchange for the client to retrieve a TGT.
@@ -75,17 +75,17 @@ func (cl *Client) ASExchange(realm string, ASReq messages.ASReq, referral int) (
 	return ASRep, nil
 }
 
-// setPAData adds pre-authentication data to the AS_REQ.
+// setPAData adds the PA-ENC-TIMESTAMP encrypted-timestamp pre-authentication
+// padata (RFC 4120 §5.2.7.2) to the AS-REQ when pre-authentication is in play.
+// PA-REQ-ENC-PA-REP (RFC 6806 §11) is set on every AS-REQ at construction time
+// in NewASReq, not here, so retries and referrals don't duplicate it.
 func setPAData(cl *Client, krberr *messages.KRBError, ASReq *messages.ASReq) error {
-	if !cl.settings.DisablePAFXFAST() {
-		pa := types.PAData{PADataType: patype.PA_REQ_ENC_PA_REP}
-		ASReq.PAData = append(ASReq.PAData, pa)
-	}
 	if cl.settings.AssumePreAuthentication() {
 		// Identify the etype to use to encrypt the PA Data
 		var et etype.EType
 		var err error
 		var key types.EncryptionKey
+		var kvno int
 		if krberr == nil {
 			// This is not in response to an error from the KDC. It is preemptive or renewal
 			// There is no KRB Error that tells us the etype to use
@@ -97,7 +97,7 @@ func setPAData(cl *Client, krberr *messages.KRBError, ASReq *messages.ASReq) err
 			if err != nil {
 				return krberror.Errorf(err, krberror.EncryptingError, "error getting etype for pre-auth encryption")
 			}
-			key, err = cl.Key(et, nil)
+			key, kvno, err = cl.Key(et, 0, nil)
 			if err != nil {
 				return krberror.Errorf(err, krberror.EncryptingError, "error getting key from credentials")
 			}
@@ -108,7 +108,7 @@ func setPAData(cl *Client, krberr *messages.KRBError, ASReq *messages.ASReq) err
 				return krberror.Errorf(err, krberror.EncryptingError, "error getting etype for pre-auth encryption")
 			}
 			cl.settings.preAuthEType = et.GetETypeID() // Set the etype that has been defined for potential future use
-			key, err = cl.Key(et, krberr)
+			key, kvno, err = cl.Key(et, 0, krberr)
 			if err != nil {
 				return krberror.Errorf(err, krberror.EncryptingError, "error getting key from credentials")
 			}
@@ -118,8 +118,7 @@ func setPAData(cl *Client, krberr *messages.KRBError, ASReq *messages.ASReq) err
 		if err != nil {
 			return krberror.Errorf(err, krberror.KRBMsgError, "error creating PAEncTSEnc for Pre-Authentication")
 		}
-		//TODO (theme: KVNO from keytab) the kvno should not be hard coded to 1 as this hampers troubleshooting.
-		paEncTS, err := crypto.GetEncryptedData(paTSb, key, keyusage.AS_REQ_PA_ENC_TIMESTAMP, 1)
+		paEncTS, err := crypto.GetEncryptedData(paTSb, key, keyusage.AS_REQ_PA_ENC_TIMESTAMP, kvno)
 		if err != nil {
 			return krberror.Errorf(err, krberror.EncryptingError, "error encrypting pre-authentication timestamp")
 		}
@@ -153,6 +152,7 @@ func preAuthEType(krberr *messages.KRBError) (etype etype.EType, err error) {
 		err = krberror.Errorf(e, krberror.EncodingError, "error unmashalling KRBError data")
 		return
 	}
+Loop:
 	for _, pa := range pas {
 		switch pa.PADataType {
 		case patype.PA_ETYPE_INFO2:
@@ -162,7 +162,7 @@ func preAuthEType(krberr *messages.KRBError) (etype etype.EType, err error) {
 				return
 			}
 			etypeID = info[0].EType
-			break
+			break Loop
 		case patype.PA_ETYPE_INFO:
 			info, e := pa.GetETypeInfo()
 			if e != nil {

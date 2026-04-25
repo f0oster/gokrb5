@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/f0oster/gokrb5/test/testdata"
 	"github.com/stretchr/testify/assert"
-	"gopkg.in/jcmturner/gokrb5.v7/test/testdata"
 )
 
 func TestPAC_ClientInfo_Unmarshal(t *testing.T) {

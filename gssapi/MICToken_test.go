@@ -5,9 +5,9 @@ import (
 	"encoding/hex"
 	"testing"
 
+	"github.com/f0oster/gokrb5/iana/keyusage"
+	"github.com/f0oster/gokrb5/types"
 	"github.com/stretchr/testify/assert"
-	"gopkg.in/jcmturner/gokrb5.v7/iana/keyusage"
-	"gopkg.in/jcmturner/gokrb5.v7/types"
 )
 
 const (
@@ -159,6 +159,62 @@ func TestMarshal_MICFailures(t *testing.T) {
 	chkBytes, chkErr := noChkSum.Marshal()
 	assert.Nil(t, chkBytes, "No bytes should be returned.")
 	assert.NotNil(t, chkErr, "Expected an error as no checksum was set")
+}
+
+// TestMICToken_CallerBufferMutationDoesNotAffectToken verifies that
+// MICToken.Unmarshal copies the trailing checksum out of the caller's
+// input buffer, matching the equivalent WrapToken fix. Without the
+// copy, a long-lived SASL receive loop that reuses a buffer could
+// silently corrupt an already-parsed MIC token.
+func TestMICToken_CallerBufferMutationDoesNotAffectToken(t *testing.T) {
+	t.Parallel()
+	src, _ := hex.DecodeString(testMICChallengeFromAcceptor)
+	buf := make([]byte, len(src))
+	copy(buf, src)
+
+	var mt MICToken
+	if err := mt.Unmarshal(buf, true); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	checksumBefore := append([]byte(nil), mt.Checksum...)
+	for i := range buf {
+		buf[i] = 0xAA
+	}
+	assert.Equal(t, checksumBefore, mt.Checksum, "Checksum must not alias caller buffer")
+}
+
+// TestMICToken_AcceptorSubkeyFlagRoundTrip confirms the flag bit that
+// selects the acceptor subkey (0x04) is preserved through
+// Unmarshal/Marshal. SecurityContext.VerifySignature relies on this
+// flag to pick the correct verification key per MS-KILE §3.1.1.2.
+func TestMICToken_AcceptorSubkeyFlagRoundTrip(t *testing.T) {
+	t.Parallel()
+	key := getSessionKey()
+	original := &MICToken{
+		Flags:     MICTokenFlagSentByAcceptor | MICTokenFlagAcceptorSubkey,
+		SndSeqNum: 42,
+		Payload:   []byte("sign me"),
+	}
+	if err := original.SetChecksum(key, keyusage.GSSAPI_ACCEPTOR_SIGN); err != nil {
+		t.Fatalf("SetChecksum: %v", err)
+	}
+	wire, err := original.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var parsed MICToken
+	if err := parsed.Unmarshal(wire, true); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	assert.NotZero(t, parsed.Flags&MICTokenFlagAcceptorSubkey, "AcceptorSubkey flag lost in round-trip")
+	assert.Equal(t, uint64(42), parsed.SndSeqNum)
+
+	// Verify with the same key to confirm key selection logic works.
+	parsed.Payload = []byte("sign me")
+	ok, err := parsed.Verify(key, keyusage.GSSAPI_ACCEPTOR_SIGN)
+	assert.NoError(t, err)
+	assert.True(t, ok)
 }
 
 func TestNewInitiatorMICTokenSignatureAndMarshalling(t *testing.T) {

@@ -3,16 +3,15 @@ package service
 import (
 	"time"
 
-	"gopkg.in/jcmturner/gokrb5.v7/credentials"
-	"gopkg.in/jcmturner/gokrb5.v7/iana/errorcode"
-	"gopkg.in/jcmturner/gokrb5.v7/messages"
+	"github.com/f0oster/gokrb5/credentials"
+	"github.com/f0oster/gokrb5/iana/errorcode"
+	"github.com/f0oster/gokrb5/messages"
 )
 
 // VerifyAPREQ verifies an AP_REQ sent to the service. Returns a boolean for if the AP_REQ is valid and the client's principal name and realm.
-func VerifyAPREQ(APReq messages.APReq, s *Settings) (bool, *credentials.Credentials, error) {
+func VerifyAPREQ(APReq *messages.APReq, s *Settings) (bool, *credentials.Credentials, error) {
 	var creds *credentials.Credentials
-
-	ok, err := APReq.Verify(s.Keytab, s.MaxClockSkew(), s.ClientAddress())
+	ok, err := APReq.Verify(s.Keytab, s.MaxClockSkew(), s.ClientAddress(), s.KeytabPrincipal())
 	if err != nil || !ok {
 		return false, creds, err
 	}

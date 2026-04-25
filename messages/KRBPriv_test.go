@@ -5,12 +5,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/f0oster/gokrb5/iana"
+	"github.com/f0oster/gokrb5/iana/addrtype"
+	"github.com/f0oster/gokrb5/iana/msgtype"
+	"github.com/f0oster/gokrb5/test/testdata"
+	"github.com/f0oster/gokrb5/types"
 	"github.com/stretchr/testify/assert"
-	"gopkg.in/jcmturner/gokrb5.v7/iana"
-	"gopkg.in/jcmturner/gokrb5.v7/iana/addrtype"
-	"gopkg.in/jcmturner/gokrb5.v7/iana/msgtype"
-	"gopkg.in/jcmturner/gokrb5.v7/test/testdata"
-	"gopkg.in/jcmturner/gokrb5.v7/types"
 )
 
 func TestUnmarshalKRBPriv(t *testing.T) {

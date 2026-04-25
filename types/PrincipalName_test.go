@@ -1,8 +1,8 @@
 package types
 
 import (
+	"github.com/f0oster/gokrb5/iana/nametype"
 	"github.com/stretchr/testify/assert"
-	"gopkg.in/jcmturner/gokrb5.v7/iana/nametype"
 
 	"testing"
 )

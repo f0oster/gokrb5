@@ -1,13 +1,21 @@
 package client
 
-import "log"
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+)
 
 // Settings holds optional client settings.
 type Settings struct {
-	disablePAFXFast         bool
 	assumePreAuthentication bool
 	preAuthEType            int32
 	logger                  *log.Logger
+}
+
+// jsonSettings is used when marshaling the Settings details to JSON format.
+type jsonSettings struct {
+	AssumePreAuthentication bool
 }
 
 // NewSettings creates a new client settings struct.
@@ -17,20 +25,6 @@ func NewSettings(settings ...func(*Settings)) *Settings {
 		set(s)
 	}
 	return s
-}
-
-// DisablePAFXFAST used to configure the client to not use PA_FX_FAST.
-//
-// s := NewSettings(DisablePAFXFAST(true))
-func DisablePAFXFAST(b bool) func(*Settings) {
-	return func(s *Settings) {
-		s.disablePAFXFast = b
-	}
-}
-
-// DisablePAFXFAST indicates is the client should disable the use of PA_FX_FAST.
-func (s *Settings) DisablePAFXFAST() bool {
-	return s.disablePAFXFast
 }
 
 // AssumePreAuthentication used to configure the client to assume pre-authentication is required.
@@ -64,6 +58,19 @@ func (s *Settings) Logger() *log.Logger {
 // Log will write to the service's logger if it is configured.
 func (cl *Client) Log(format string, v ...interface{}) {
 	if cl.settings.Logger() != nil {
-		cl.settings.Logger().Printf(format, v...)
+		cl.settings.Logger().Output(2, fmt.Sprintf(format, v...))
 	}
+}
+
+// JSON returns a JSON representation of the settings.
+func (s *Settings) JSON() (string, error) {
+	js := jsonSettings{
+		AssumePreAuthentication: s.assumePreAuthentication,
+	}
+	b, err := json.MarshalIndent(js, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+
 }

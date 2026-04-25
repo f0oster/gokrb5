@@ -1,2 +1,8 @@
 gokrb5
 Copyright 2016, Jonathan Turner <jt@jtnet.co.uk>
+
+Portions Copyright 2026, Stephen Mills <stephenf0ostermills@gmail.com>
+
+This distribution is a modified derivative work of the original gokrb5
+library by Jonathan Turner. See README.md for a description of changes
+from upstream.

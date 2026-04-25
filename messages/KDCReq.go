@@ -11,18 +11,18 @@ import (
 	"time"
 
 	"github.com/jcmturner/gofork/encoding/asn1"
-	"gopkg.in/jcmturner/gokrb5.v7/asn1tools"
-	"gopkg.in/jcmturner/gokrb5.v7/config"
-	"gopkg.in/jcmturner/gokrb5.v7/crypto"
-	"gopkg.in/jcmturner/gokrb5.v7/iana"
-	"gopkg.in/jcmturner/gokrb5.v7/iana/asnAppTag"
-	"gopkg.in/jcmturner/gokrb5.v7/iana/flags"
-	"gopkg.in/jcmturner/gokrb5.v7/iana/keyusage"
-	"gopkg.in/jcmturner/gokrb5.v7/iana/msgtype"
-	"gopkg.in/jcmturner/gokrb5.v7/iana/nametype"
-	"gopkg.in/jcmturner/gokrb5.v7/iana/patype"
-	"gopkg.in/jcmturner/gokrb5.v7/krberror"
-	"gopkg.in/jcmturner/gokrb5.v7/types"
+	"github.com/f0oster/gokrb5/asn1tools"
+	"github.com/f0oster/gokrb5/config"
+	"github.com/f0oster/gokrb5/crypto"
+	"github.com/f0oster/gokrb5/iana"
+	"github.com/f0oster/gokrb5/iana/asnAppTag"
+	"github.com/f0oster/gokrb5/iana/flags"
+	"github.com/f0oster/gokrb5/iana/keyusage"
+	"github.com/f0oster/gokrb5/iana/msgtype"
+	"github.com/f0oster/gokrb5/iana/nametype"
+	"github.com/f0oster/gokrb5/iana/patype"
+	"github.com/f0oster/gokrb5/krberror"
+	"github.com/f0oster/gokrb5/types"
 )
 
 type marshalKDCReq struct {
@@ -116,7 +116,12 @@ func NewASReq(realm string, c *config.Config, cname, sname types.PrincipalName) 
 		KDCReqFields{
 			PVNO:    iana.PVNO,
 			MsgType: msgtype.KRB_AS_REQ,
-			PAData:  types.PADataSequence{},
+			// RFC 6806 §11: clients MUST send PA-REQ-ENC-PA-REP in every
+			// AS-REQ. Carrying it here keeps it singular across preauth
+			// retries and referrals.
+			PAData: types.PADataSequence{
+				types.PAData{PADataType: patype.PA_REQ_ENC_PA_REP},
+			},
 			ReqBody: KDCReqBody{
 				KDCOptions: kopts,
 				Realm:      realm,

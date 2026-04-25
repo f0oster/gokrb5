@@ -2,22 +2,19 @@ package spnego
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 
 	"github.com/jcmturner/gofork/encoding/asn1"
-	"gopkg.in/jcmturner/gokrb5.v7/asn1tools"
-	"gopkg.in/jcmturner/gokrb5.v7/client"
-	"gopkg.in/jcmturner/gokrb5.v7/credentials"
-	"gopkg.in/jcmturner/gokrb5.v7/gssapi"
-	"gopkg.in/jcmturner/gokrb5.v7/iana/chksumtype"
-	"gopkg.in/jcmturner/gokrb5.v7/iana/msgtype"
-	"gopkg.in/jcmturner/gokrb5.v7/krberror"
-	"gopkg.in/jcmturner/gokrb5.v7/messages"
-	"gopkg.in/jcmturner/gokrb5.v7/service"
-	"gopkg.in/jcmturner/gokrb5.v7/types"
+	"github.com/f0oster/gokrb5/asn1tools"
+	"github.com/f0oster/gokrb5/client"
+	"github.com/f0oster/gokrb5/crypto"
+	"github.com/f0oster/gokrb5/gssapi"
+	"github.com/f0oster/gokrb5/iana/msgtype"
+	"github.com/f0oster/gokrb5/messages"
+	"github.com/f0oster/gokrb5/service"
+	"github.com/f0oster/gokrb5/types"
 )
 
 // GSSAPI KRB5 MechToken IDs.
@@ -34,8 +31,32 @@ type KRB5Token struct {
 	APReq    messages.APReq
 	APRep    messages.APRep
 	KRBError messages.KRBError
-	settings *service.Settings
-	context  context.Context
+	// EncAPRepPart is the decrypted AP-REP populated by Verify; it carries
+	// the optional Subkey and SequenceNumber for seeding a
+	// gssapi.SecurityContext.
+	EncAPRepPart *messages.EncAPRepPart
+	// Authenticator is the plaintext Authenticator generated when the
+	// token is built via NewKRB5TokenAPREQ or NewKRB5TokenAPREQWithBindings.
+	// Unset for tokens parsed from the wire.
+	Authenticator types.Authenticator
+	settings     *service.Settings
+	// sentAuth and sessionKey are set by SetAPRepVerification before
+	// Verify is called on an AP-REP token. Without them Verify cannot
+	// perform the RFC 4120 3.2.4 ctime/cusec check.
+	sentAuth   types.Authenticator
+	sessionKey types.EncryptionKey
+	context    context.Context
+}
+
+// SetAPRepVerification provides the inputs required to verify an AP-REP
+// KRB5Token per RFC 4120 3.2.4. Callers doing client-side mutual
+// authentication must call this before invoking Verify on a token that
+// contains an AP-REP. sentAuth is the Authenticator the client placed
+// in its AP-REQ (its ctime and cusec are the mutual-auth proof);
+// sessionKey is the session key from the service ticket.
+func (m *KRB5Token) SetAPRepVerification(sentAuth types.Authenticator, sessionKey types.EncryptionKey) {
+	m.sentAuth = sentAuth
+	m.sessionKey = sessionKey
 }
 
 // Marshal a KRB5Token into a slice of bytes.
@@ -70,8 +91,8 @@ func (m *KRB5Token) Unmarshal(b []byte) error {
 	if err != nil {
 		return fmt.Errorf("error unmarshalling KRB5Token OID: %v", err)
 	}
-	if !oid.Equal(gssapi.OID(gssapi.OIDKRB5)) {
-		return fmt.Errorf("error unmarshalling KRB5Token, OID is %s not %s", oid.String(), gssapi.OID(gssapi.OIDKRB5).String())
+	if !oid.Equal(gssapi.OIDKRB5.OID()) {
+		return fmt.Errorf("error unmarshalling KRB5Token, OID is %s not %s", oid.String(), gssapi.OIDKRB5.OID().String())
 	}
 	m.OID = oid
 	if len(r) < 2 {
@@ -108,7 +129,7 @@ func (m *KRB5Token) Unmarshal(b []byte) error {
 func (m *KRB5Token) Verify() (bool, gssapi.Status) {
 	switch hex.EncodeToString(m.tokID) {
 	case TOK_ID_KRB_AP_REQ:
-		ok, creds, err := service.VerifyAPREQ(m.APReq, m.settings)
+		ok, creds, err := service.VerifyAPREQ(&m.APReq, m.settings)
 		if err != nil {
 			return false, gssapi.Status{Code: gssapi.StatusDefectiveToken, Message: err.Error()}
 		}
@@ -116,13 +137,21 @@ func (m *KRB5Token) Verify() (bool, gssapi.Status) {
 			return false, gssapi.Status{Code: gssapi.StatusDefectiveCredential, Message: "KRB5_AP_REQ token not valid"}
 		}
 		m.context = context.Background()
-		m.context = context.WithValue(m.context, CTXKeyCredentials, creds)
-		m.context = context.WithValue(m.context, CTXKeyAuthenticated, ok)
+		m.context = context.WithValue(m.context, ctxCredentials, creds)
 		return true, gssapi.Status{Code: gssapi.StatusComplete}
 	case TOK_ID_KRB_AP_REP:
-		// Client side
-		// TODO how to verify the AP_REP - not yet implemented
-		return false, gssapi.Status{Code: gssapi.StatusFailure, Message: "verifying an AP_REP is not currently supported by gokrb5"}
+		// Client side: verify the AP-REP per RFC 4120 3.2.4. The caller
+		// must have provided the sent Authenticator and session key via
+		// SetAPRepVerification before reaching here.
+		if len(m.sessionKey.KeyValue) == 0 {
+			return false, gssapi.Status{Code: gssapi.StatusFailure, Message: "AP-REP verification inputs not set; call SetAPRepVerification before Verify"}
+		}
+		encPart, err := gssapi.VerifyAPRep(m.APRep, m.sessionKey, m.sentAuth)
+		if err != nil {
+			return false, gssapi.Status{Code: gssapi.StatusDefectiveCredential, Message: err.Error()}
+		}
+		m.EncAPRepPart = encPart
+		return true, gssapi.Status{Code: gssapi.StatusComplete}
 	case TOK_ID_KRB_ERROR:
 		if m.KRBError.MsgType != msgtype.KRB_ERROR {
 			return false, gssapi.Status{Code: gssapi.StatusDefectiveToken, Message: "KRB5_Error token not valid"}
@@ -161,17 +190,45 @@ func (m *KRB5Token) Context() context.Context {
 	return m.context
 }
 
-// NewKRB5TokenAPREQ creates a new KRB5 token with AP_REQ
+// NewKRB5TokenAPREQ creates a new KRB5 AP-REQ token without channel
+// bindings or credential delegation. Use NewKRB5TokenAPREQWithBindings
+// for either.
 func NewKRB5TokenAPREQ(cl *client.Client, tkt messages.Ticket, sessionKey types.EncryptionKey, GSSAPIFlags []int, APOptions []int) (KRB5Token, error) {
+	return NewKRB5TokenAPREQWithBindings(cl, tkt, sessionKey, GSSAPIFlags, APOptions, nil, nil)
+}
+
+// NewKRB5TokenAPREQWithBindings creates a new KRB5 AP-REQ token with
+// optional channel bindings and credential delegation. When bindings is
+// non-nil its MD5 hash is placed in the authenticator checksum Bnd field
+// per RFC 4121 §4.1.1. When delegationCredDER is non-nil, the DER-encoded
+// KRB_CRED bytes are placed in the Deleg field and ContextFlagDeleg is
+// set per RFC 4121 §4.1.1.1; callers typically reuse a KRB_CRED they
+// already received from the KDC.
+//
+// A random Authenticator subkey matching the session key's enctype is
+// generated unconditionally (strict CFX acceptors require it). The
+// plaintext Authenticator including the subkey is stored on
+// KRB5Token.Authenticator so callers can pass its SeqNumber and SubKey
+// into gssapi.NewInitiatorContext.
+func NewKRB5TokenAPREQWithBindings(cl *client.Client, tkt messages.Ticket, sessionKey types.EncryptionKey, GSSAPIFlags []int, APOptions []int, bindings *gssapi.ChannelBindings, delegationCredDER []byte) (KRB5Token, error) {
 	// TODO consider providing the SPN rather than the specific tkt and key and get these from the krb client.
 	var m KRB5Token
-	m.OID = gssapi.OID(gssapi.OIDKRB5)
+	m.OID = gssapi.OIDKRB5.OID()
 	tb, _ := hex.DecodeString(TOK_ID_KRB_AP_REQ)
 	m.tokID = tb
 
-	auth, err := krb5TokenAuthenticator(cl.Credentials, GSSAPIFlags)
+	auth, err := gssapi.NewGSSAuthenticator(cl.Credentials, GSSAPIFlags, bindings, delegationCredDER)
 	if err != nil {
 		return m, err
+	}
+	// Generate a random Authenticator subkey matching the session key's
+	// enctype. Strict CFX acceptors require a GSS-specific subkey.
+	encType, err := crypto.GetEtype(sessionKey.KeyType)
+	if err != nil {
+		return m, fmt.Errorf("get etype for authenticator subkey: %w", err)
+	}
+	if err := auth.GenerateSeqNumberAndSubKey(sessionKey.KeyType, encType.GetKeyByteSize()); err != nil {
+		return m, fmt.Errorf("generate authenticator subkey: %w", err)
 	}
 	APReq, err := messages.NewAPReq(
 		tkt,
@@ -185,35 +242,7 @@ func NewKRB5TokenAPREQ(cl *client.Client, tkt messages.Ticket, sessionKey types.
 		types.SetFlag(&APReq.APOptions, o)
 	}
 	m.APReq = APReq
+	m.Authenticator = auth
 	return m, nil
 }
 
-// krb5TokenAuthenticator creates a new kerberos authenticator for kerberos MechToken
-func krb5TokenAuthenticator(creds *credentials.Credentials, flags []int) (types.Authenticator, error) {
-	//RFC 4121 Section 4.1.1
-	auth, err := types.NewAuthenticator(creds.Domain(), creds.CName())
-	if err != nil {
-		return auth, krberror.Errorf(err, krberror.KRBMsgError, "error generating new authenticator")
-	}
-	auth.Cksum = types.Checksum{
-		CksumType: chksumtype.GSSAPI,
-		Checksum:  newAuthenticatorChksum(flags),
-	}
-	return auth, nil
-}
-
-// Create new authenticator checksum for kerberos MechToken
-func newAuthenticatorChksum(flags []int) []byte {
-	a := make([]byte, 24)
-	binary.LittleEndian.PutUint32(a[:4], 16)
-	for _, i := range flags {
-		if i == gssapi.ContextFlagDeleg {
-			x := make([]byte, 28-len(a))
-			a = append(a, x...)
-		}
-		f := binary.LittleEndian.Uint32(a[20:24])
-		f |= uint32(i)
-		binary.LittleEndian.PutUint32(a[20:24], f)
-	}
-	return a
-}

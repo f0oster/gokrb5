@@ -1,8 +1,8 @@
 # gokrb5
 
-Personal fork of [jcmturner/gokrb5](https://github.com/jcmturner/gokrb5) with the addition of channel binding, SASL message wrapping, and a higher-level API for GSS context establishment.
+Personal fork derived from [jcmturner/gokrb5](https://github.com/jcmturner/gokrb5), licensed under Apache 2.0. This fork has branched from upstream and does not aim to maintain compatibility. See [LICENSE](LICENSE) and [NOTICE](NOTICE) for attribution and license terms.
 
-## Features:
+## Features
 
 - GSS-API per-message tokens (Wrap and MIC), integrity-only and confidential. RFC 4121.
 - AP-REP mutual-authentication verification. RFC 4120.
@@ -19,55 +19,7 @@ Tested against Active Directory (Windows Server 2022) and FreeIPA (MIT KDC).
 
 `client.DisablePAFXFAST` is removed. `PA-REQ-ENC-PA-REP` is sent on every AS-REQ, and the echo is verified per RFC 6806 §11 when the `enc-pa-rep` flag is set. `PA-FX-FAST` (RFC 6113) is not required in the encrypted PA-data, so KDCs that do not advertise FAST (including default Active Directory) interoperate.
 
-### Standards / RFCs referenced
-
-* [RFC 2743](https://tools.ietf.org/html/rfc2743) - GSS-API v2, Update 1
-* [RFC 2744](https://tools.ietf.org/html/rfc2744) - GSS-API v2 C-bindings
-* [RFC 4422](https://tools.ietf.org/html/rfc4422) - Simple Authentication and Security Layer (SASL)
-* [RFC 4752](https://tools.ietf.org/html/rfc4752) - The Kerberos V5 ("GSSAPI") SASL Mechanism
-* [RFC 5929](https://tools.ietf.org/html/rfc5929) - Channel Bindings for TLS
-* [\[MS-KILE\] Kerberos Protocol Extensions](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-kile/2a32282e-dd48-4ad9-a542-609804b02cc9) - particularly §3.1.1.2 (Cryptographic Material), §3.2.1 (Abstract Data Model), and §3.4.5.4.1 (Kerberos Binding of GSS_WrapEx).
-
-The remainder of this README is the original [jcmturner/gokrb5](https://github.com/jcmturner/gokrb5) README.
-
----
-
-# gokrb5
-
-It is recommended to use the latest version: [![Version](https://img.shields.io/github/release/jcmturner/gokrb5.svg)](https://github.com/jcmturner/gokrb5/releases)
-
-Development will be focused on the latest major version. New features will only be targeted at this version.
-
-| Versions | Dependency Management | Import Path | Usage | Godoc | Go Report Card |
-|----------|-----------------------|-------------|-------|-------|----------------|
-| [![v8](https://github.com/jcmturner/gokrb5/workflows/v8/badge.svg)](https://github.com/jcmturner/gokrb5/actions?query=workflow%3Av8) | Go modules | import "github.com/jcmturner/gokrb5/v8/{sub-package}" | [![Usage](https://img.shields.io/badge/v8-usage-blue)](https://github.com/jcmturner/gokrb5/blob/master/v8/USAGE.md) | [![GoDoc](https://img.shields.io/badge/godoc-reference-blue)](https://pkg.go.dev/github.com/jcmturner/gokrb5/v8) | [![Go Report Card](https://goreportcard.com/badge/github.com/jcmturner/gokrb5/v8)](https://goreportcard.com/report/github.com/jcmturner/gokrb5/v8) |
-| [![v7](https://github.com/jcmturner/gokrb5/workflows/v7/badge.svg)](https://github.com/jcmturner/gokrb5/actions?query=workflow%3Av7) | gopkg.in | import "gopkg.in/jcmturner/gokrb5.v7/{sub-package}" | [![Usage](https://img.shields.io/badge/v7-usage-blue)](https://github.com/jcmturner/gokrb5/blob/master/USAGE.md) | [![GoDoc](https://img.shields.io/badge/godoc-reference-blue)](https://pkg.go.dev/github.com/jcmturner/gokrb5@v7.5.0+incompatible) | [![Go Report Card](https://goreportcard.com/badge/gopkg.in/jcmturner/gokrb5.v7)](https://goreportcard.com/report/gopkg.in/jcmturner/gokrb5.v7) |
-
-
-#### Go Version Support
-![Go version](https://img.shields.io/badge/Go-1.18-brightgreen.svg)
-![Go version](https://img.shields.io/badge/Go-1.17-brightgreen.svg)
-![Go version](https://img.shields.io/badge/Go-1.16-brightgreen.svg)
-
-gokrb5 may work with other versions of Go but they are not formally tested.
-It has been reported that gokrb5 also works with the [gollvm](https://go.googlesource.com/gollvm/) compiler but this is not formally tested.
-
-## Features
-* **Pure Go** - no dependency on external libraries 
-* No platform specific code
-* Server Side
-  * HTTP handler wrapper implements SPNEGO Kerberos authentication
-  * HTTP handler wrapper decodes Microsoft AD PAC authorization data
-* Client Side
-  * Client that can authenticate to an SPNEGO Kerberos authenticated web service
-  * Ability to change client's password
-* General
-  * Kerberos libraries for custom integration
-  * Parsing Keytab files
-  * Parsing krb5.conf files
-  * Parsing client credentials cache files such as `/tmp/krb5cc_$(id -u $(whoami))`
-
-#### Implemented Encryption & Checksum Types
+## Implemented encryption and checksum types
 
 | Implementation | Encryption ID | Checksum ID | RFC |
 |-------|-------------|------------|------|
@@ -78,52 +30,33 @@ It has been reported that gokrb5 also works with the [gollvm](https://go.googles
 | aes256-cts-hmac-sha384-192 | 20 | 20 | 8009 |
 | rc4-hmac | 23 | -138 | 4757 |
 
+## Standards / RFCs
 
-The following is working/tested:
-* Tested against MIT KDC (1.6.3 is the oldest version tested against) and Microsoft Active Directory (Windows 2008 R2)
-* Tested against a KDC that supports PA-FX-FAST.
-* Tested against users that have pre-authentication required using PA-ENC-TIMESTAMP.
-* Microsoft PAC Authorization Data is processed and exposed in the HTTP request context. Available if Microsoft Active Directory is used as the KDC.
-
-## Contributing
-If you are interested in contributing to gokrb5, great! Please read the [contribution guidelines](https://github.com/jcmturner/gokrb5/blob/master/CONTRIBUTING.md).
-
----
-
-## References
-* [RFC 3244 Microsoft Windows 2000 Kerberos Change Password and Set Password Protocols](https://tools.ietf.org/html/rfc3244)
-* [RFC 4120 The Kerberos Network Authentication Service (V5)](https://tools.ietf.org/html/rfc4120)
-* [RFC 3961 Encryption and Checksum Specifications for Kerberos 5](https://tools.ietf.org/html/rfc3961)
-* [RFC 3962 Advanced Encryption Standard (AES) Encryption for Kerberos 5](https://tools.ietf.org/html/rfc3962)
-* [RFC 4121 The Kerberos Version 5 GSS-API Mechanism](https://tools.ietf.org/html/rfc4121)
-* [RFC 4178 The Simple and Protected Generic Security Service Application Program Interface (GSS-API) Negotiation Mechanism](https://tools.ietf.org/html/rfc4178.html)
-* [RFC 4559 SPNEGO-based Kerberos and NTLM HTTP Authentication in Microsoft Windows](https://tools.ietf.org/html/rfc4559.html)
-* [RFC 4757 The RC4-HMAC Kerberos Encryption Types Used by Microsoft Windows](https://tools.ietf.org/html/rfc4757)
-* [RFC 6806 Kerberos Principal Name Canonicalization and Cross-Realm Referrals](https://tools.ietf.org/html/rfc6806.html)
-* [RFC 6113 A Generalized Framework for Kerberos Pre-Authentication](https://tools.ietf.org/html/rfc6113.html)
-* [RFC 8009 AES Encryption with HMAC-SHA2 for Kerberos 5](https://tools.ietf.org/html/rfc8009)
+* [RFC 2743](https://tools.ietf.org/html/rfc2743) - GSS-API v2, Update 1
+* [RFC 2744](https://tools.ietf.org/html/rfc2744) - GSS-API v2 C-bindings
+* [RFC 3244](https://tools.ietf.org/html/rfc3244) - Microsoft Windows 2000 Kerberos Change Password and Set Password Protocols
+* [RFC 3961](https://tools.ietf.org/html/rfc3961) - Encryption and Checksum Specifications for Kerberos 5
+* [RFC 3962](https://tools.ietf.org/html/rfc3962) - AES Encryption for Kerberos 5
+* [RFC 4120](https://tools.ietf.org/html/rfc4120) - The Kerberos Network Authentication Service (V5)
+* [RFC 4121](https://tools.ietf.org/html/rfc4121) - The Kerberos Version 5 GSS-API Mechanism
+* [RFC 4178](https://tools.ietf.org/html/rfc4178.html) - SPNEGO
+* [RFC 4422](https://tools.ietf.org/html/rfc4422) - Simple Authentication and Security Layer (SASL)
+* [RFC 4559](https://tools.ietf.org/html/rfc4559.html) - SPNEGO-based Kerberos and NTLM HTTP Authentication in Microsoft Windows
+* [RFC 4752](https://tools.ietf.org/html/rfc4752) - The Kerberos V5 ("GSSAPI") SASL Mechanism
+* [RFC 4757](https://tools.ietf.org/html/rfc4757) - The RC4-HMAC Kerberos Encryption Types Used by Microsoft Windows
+* [RFC 5929](https://tools.ietf.org/html/rfc5929) - Channel Bindings for TLS
+* [RFC 6113](https://tools.ietf.org/html/rfc6113.html) - A Generalized Framework for Kerberos Pre-Authentication
+* [RFC 6806](https://tools.ietf.org/html/rfc6806.html) - Kerberos Principal Name Canonicalization and Cross-Realm Referrals
+* [RFC 8009](https://tools.ietf.org/html/rfc8009) - AES Encryption with HMAC-SHA2 for Kerberos 5
+* [\[MS-KILE\] Kerberos Protocol Extensions](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-kile/2a32282e-dd48-4ad9-a542-609804b02cc9). Particularly §3.1.1.2 (Cryptographic Material), §3.2.1 (Abstract Data Model), and §3.4.5.4.1 (Kerberos Binding of GSS_WrapEx).
 * [IANA Assigned Kerberos Numbers](http://www.iana.org/assignments/kerberos-parameters/kerberos-parameters.xhtml)
-* [HTTP-Based Cross-Platform Authentication by Using the Negotiate Protocol - Part 1](https://msdn.microsoft.com/en-us/library/ms995329.aspx)
-* [HTTP-Based Cross-Platform Authentication by Using the Negotiate Protocol - Part 2](https://msdn.microsoft.com/en-us/library/ms995330.aspx)
-* [Microsoft PAC Validation](https://blogs.msdn.microsoft.com/openspecification/2009/04/24/understanding-microsoft-kerberos-pac-validation/)
-* [Microsoft Kerberos Protocol Extensions](https://msdn.microsoft.com/en-us/library/cc233855.aspx)
-* [Windows Data Types](https://msdn.microsoft.com/en-us/library/cc230273.aspx)
 
-### Useful Links
-* https://en.wikipedia.org/wiki/Ciphertext_stealing#CBC_ciphertext_stealing
+## Known issues
 
-## Thanks
-* Greg Hudson from the MIT Consortium for Kerberos and Internet Trust for providing useful advice.
-
-## Contributing
-Thank you for your interest in contributing to gokrb5 please read the 
-[contribution guide](https://github.com/jcmturner/gokrb5/blob/master/CONTRIBUTING.md) as it should help you get started.
-
-## Known Issues
 | Issue | Worked around? | References |
 |-------|-------------|------------|
 | The Go standard library's encoding/asn1 package cannot unmarshal into slice of asn1.RawValue | Yes | https://github.com/golang/go/issues/17321 |
 | The Go standard library's encoding/asn1 package cannot marshal into a GeneralString | Yes - using https://github.com/jcmturner/gofork/tree/master/encoding/asn1 | https://github.com/golang/go/issues/18832 |
 | The Go standard library's encoding/asn1 package cannot marshal into slice of strings and pass stringtype parameter tags to members | Yes - using https://github.com/jcmturner/gofork/tree/master/encoding/asn1 | https://github.com/golang/go/issues/18834 |
 | The Go standard library's encoding/asn1 package cannot marshal with application tags | Yes | |
-| The Go standard library's x/crypto/pbkdf2.Key function uses the int type for iteraction count limiting meaning the 4294967296 count specified in https://tools.ietf.org/html/rfc3962 section 4 cannot be met on 32bit systems | Yes - using https://github.com/jcmturner/gofork/tree/master/x/crypto/pbkdf2 | https://go-review.googlesource.com/c/crypto/+/85535 |
+| The Go standard library's x/crypto/pbkdf2.Key function uses the int type for iteration count limiting, meaning the 4294967296 count specified in [RFC 3962 §4](https://tools.ietf.org/html/rfc3962#section-4) cannot be met on 32-bit systems | Yes - using https://github.com/jcmturner/gofork/tree/master/x/crypto/pbkdf2 | https://go-review.googlesource.com/c/crypto/+/85535 |
