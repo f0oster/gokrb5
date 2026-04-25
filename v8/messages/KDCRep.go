@@ -275,27 +275,34 @@ func (k *ASRep) Verify(cfg *config.Config, creds *credentials.Credentials, asReq
 	if t.Sub(k.DecryptedEncPart.AuthTime) > cfg.LibDefaults.Clockskew || k.DecryptedEncPart.AuthTime.Sub(t) > cfg.LibDefaults.Clockskew {
 		return false, krberror.NewErrorf(krberror.KRBMsgError, "clock skew with KDC too large. Greater than %v seconds", cfg.LibDefaults.Clockskew.Seconds())
 	}
-	// RFC 6806 https://tools.ietf.org/html/rfc6806.html#section-11
+	// RFC 6806 §11: if the client sent PA-REQ-ENC-PA-REP and the KDC set the
+	// enc-pa-rep flag, the encrypted-pa-data MUST contain a PA-REQ-ENC-PA-REP
+	// item whose checksum over the AS-REQ verifies under the reply key.
 	if asReq.PAData.Contains(patype.PA_REQ_ENC_PA_REP) && types.IsFlagSet(&k.DecryptedEncPart.Flags, flags.EncPARep) {
-		if len(k.DecryptedEncPart.EncPAData) < 2 || !k.DecryptedEncPart.EncPAData.Contains(patype.PA_FX_FAST) {
-			return false, krberror.NewErrorf(krberror.KRBMsgError, "KDC did not respond appropriately to FAST negotiation")
-		}
-		for _, pa := range k.DecryptedEncPart.EncPAData {
-			if pa.PADataType == patype.PA_REQ_ENC_PA_REP {
-				var pafast types.PAReqEncPARep
-				err := pafast.Unmarshal(pa.PADataValue)
-				if err != nil {
-					return false, krberror.Errorf(err, krberror.EncodingError, "KDC FAST negotiation response error, could not unmarshal PA_REQ_ENC_PA_REP")
-				}
-				etype, err := crypto.GetChksumEtype(pafast.ChksumType)
-				if err != nil {
-					return false, krberror.Errorf(err, krberror.ChksumError, "KDC FAST negotiation response error")
-				}
-				ab, _ := asReq.Marshal()
-				if !etype.VerifyChecksum(key.KeyValue, ab, pafast.Chksum, keyusage.KEY_USAGE_AS_REQ) {
-					return false, krberror.Errorf(err, krberror.ChksumError, "KDC FAST negotiation response checksum invalid")
-				}
+		var echo *types.PAData
+		for i := range k.DecryptedEncPart.EncPAData {
+			if k.DecryptedEncPart.EncPAData[i].PADataType == patype.PA_REQ_ENC_PA_REP {
+				echo = &k.DecryptedEncPart.EncPAData[i]
+				break
 			}
+		}
+		if echo == nil {
+			return false, krberror.NewErrorf(krberror.KRBMsgError, "enc-pa-rep flag set but PA-REQ-ENC-PA-REP echo absent from encrypted PA-data")
+		}
+		var pareqenc types.PAReqEncPARep
+		if err := pareqenc.Unmarshal(echo.PADataValue); err != nil {
+			return false, krberror.Errorf(err, krberror.EncodingError, "could not unmarshal PA-REQ-ENC-PA-REP echo")
+		}
+		etype, err := crypto.GetChksumEtype(pareqenc.ChksumType)
+		if err != nil {
+			return false, krberror.Errorf(err, krberror.ChksumError, "unsupported checksum type in PA-REQ-ENC-PA-REP echo")
+		}
+		ab, err := asReq.Marshal()
+		if err != nil {
+			return false, krberror.Errorf(err, krberror.EncodingError, "could not marshal AS-REQ for PA-REQ-ENC-PA-REP checksum verification")
+		}
+		if !etype.VerifyChecksum(key.KeyValue, ab, pareqenc.Chksum, keyusage.KEY_USAGE_AS_REQ) {
+			return false, krberror.NewErrorf(krberror.ChksumError, "PA-REQ-ENC-PA-REP checksum verification failed")
 		}
 	}
 	return true, nil

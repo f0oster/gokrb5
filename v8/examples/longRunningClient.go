@@ -61,7 +61,7 @@ func main() {
 	}
 
 	// Create the client with the keytab
-	cl := client.NewWithKeytab("testuser2", "TEST.GOKRB5", kt, conf, client.Logger(l), client.DisablePAFXFAST(true))
+	cl := client.NewWithKeytab("testuser2", "TEST.GOKRB5", kt, conf, client.Logger(l))
 
 	// Log in the client
 	err = cl.Login()

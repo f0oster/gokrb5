@@ -23,7 +23,7 @@ func TestClient_SuccessfulLogin_AD(t *testing.T) {
 	kt := keytab.New()
 	kt.Unmarshal(b)
 	c, _ := config.NewFromString(testdata.KRB5_CONF_AD)
-	cl := NewWithKeytab("testuser1", "USER.GOKRB5", kt, c, DisablePAFXFAST(true))
+	cl := NewWithKeytab("testuser1", "USER.GOKRB5", kt, c)
 
 	err := cl.Login()
 	if err != nil {
@@ -38,7 +38,7 @@ func TestClient_SuccessfulLogin_AD_Without_PreAuth(t *testing.T) {
 	kt := keytab.New()
 	kt.Unmarshal(b)
 	c, _ := config.NewFromString(testdata.KRB5_CONF_AD)
-	cl := NewWithKeytab("testuser3", "USER.GOKRB5", kt, c, DisablePAFXFAST(true))
+	cl := NewWithKeytab("testuser3", "USER.GOKRB5", kt, c)
 
 	err := cl.Login()
 	if err != nil {
@@ -98,7 +98,7 @@ func TestClient_GetServiceTicket_AD_TRUST_USER_DOMAIN(t *testing.T) {
 	c.LibDefaults.DefaultTktEnctypeIDs = []int32{etypeID.ETypesByName["rc4-hmac"]}
 	c.LibDefaults.DefaultTGSEnctypes = []string{"rc4-hmac"}
 	c.LibDefaults.DefaultTGSEnctypeIDs = []int32{etypeID.ETypesByName["rc4-hmac"]}
-	cl := NewWithKeytab("testuser1", "USER.GOKRB5", kt, c, DisablePAFXFAST(true))
+	cl := NewWithKeytab("testuser1", "USER.GOKRB5", kt, c)
 	err := cl.Login()
 
 	if err != nil {
@@ -144,7 +144,7 @@ func TestClient_GetServiceTicket_AD_USER_DOMAIN(t *testing.T) {
 	c.LibDefaults.DefaultTktEnctypeIDs = []int32{etypeID.ETypesByName["rc4-hmac"]}
 	c.LibDefaults.DefaultTGSEnctypes = []string{"rc4-hmac"}
 	c.LibDefaults.DefaultTGSEnctypeIDs = []int32{etypeID.ETypesByName["rc4-hmac"]}
-	cl := NewWithKeytab("testuser1", "USER.GOKRB5", kt, c, DisablePAFXFAST(true))
+	cl := NewWithKeytab("testuser1", "USER.GOKRB5", kt, c)
 
 	err := cl.Login()
 

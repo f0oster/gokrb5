@@ -75,12 +75,11 @@ func (cl *Client) ASExchange(realm string, ASReq messages.ASReq, referral int) (
 	return ASRep, nil
 }
 
-// setPAData adds pre-authentication data to the AS_REQ.
+// setPAData adds the PA-ENC-TIMESTAMP encrypted-timestamp pre-authentication
+// padata (RFC 4120 §5.2.7.2) to the AS-REQ when pre-authentication is in play.
+// PA-REQ-ENC-PA-REP (RFC 6806 §11) is set on every AS-REQ at construction time
+// in NewASReq, not here, so retries and referrals don't duplicate it.
 func setPAData(cl *Client, krberr *messages.KRBError, ASReq *messages.ASReq) error {
-	if !cl.settings.DisablePAFXFAST() {
-		pa := types.PAData{PADataType: patype.PA_REQ_ENC_PA_REP}
-		ASReq.PAData = append(ASReq.PAData, pa)
-	}
 	if cl.settings.AssumePreAuthentication() {
 		// Identify the etype to use to encrypt the PA Data
 		var et etype.EType

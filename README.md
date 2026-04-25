@@ -13,6 +13,12 @@ Personal fork of [jcmturner/gokrb5](https://github.com/jcmturner/gokrb5) with th
 
 Tested against Active Directory (Windows Server 2022) and FreeIPA (MIT KDC).
 
+## Breaking changes:
+
+### PA-FX-FAST removal
+
+`client.DisablePAFXFAST` is removed. `PA-REQ-ENC-PA-REP` is sent on every AS-REQ, and the echo is verified per RFC 6806 §11 when the `enc-pa-rep` flag is set. `PA-FX-FAST` (RFC 6113) is not required in the encrypted PA-data, so KDCs that do not advertise FAST (including default Active Directory) interoperate.
+
 ### Standards / RFCs referenced
 
 * [RFC 2743](https://tools.ietf.org/html/rfc2743) - GSS-API v2, Update 1

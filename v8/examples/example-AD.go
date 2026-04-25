@@ -34,14 +34,14 @@ func main() {
 	kt := keytab.New()
 	kt.Unmarshal(b)
 	c, _ := config.NewFromString(testdata.KRB5_CONF)
-	cl := client.NewWithKeytab("testuser1", "USER.GOKRB5", kt, c, client.DisablePAFXFAST(true), client.Logger(l))
+	cl := client.NewWithKeytab("testuser1", "USER.GOKRB5", kt, c, client.Logger(l))
 	httpRequest(s.URL, cl)
 
 	b, _ = hex.DecodeString(testdata.KEYTAB_TESTUSER2_USER_GOKRB5)
 	kt = keytab.New()
 	kt.Unmarshal(b)
 	c, _ = config.NewFromString(testdata.KRB5_CONF)
-	cl = client.NewWithKeytab("testuser2", "USER.GOKRB5", kt, c, client.DisablePAFXFAST(true), client.Logger(l))
+	cl = client.NewWithKeytab("testuser2", "USER.GOKRB5", kt, c, client.Logger(l))
 	httpRequest(s.URL, cl)
 }
 

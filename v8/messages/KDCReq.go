@@ -116,7 +116,12 @@ func NewASReq(realm string, c *config.Config, cname, sname types.PrincipalName) 
 		KDCReqFields{
 			PVNO:    iana.PVNO,
 			MsgType: msgtype.KRB_AS_REQ,
-			PAData:  types.PADataSequence{},
+			// RFC 6806 §11: clients MUST send PA-REQ-ENC-PA-REP in every
+			// AS-REQ. Carrying it here keeps it singular across preauth
+			// retries and referrals.
+			PAData: types.PADataSequence{
+				types.PAData{PADataType: patype.PA_REQ_ENC_PA_REP},
+			},
 			ReqBody: KDCReqBody{
 				KDCOptions: kopts,
 				Realm:      realm,
