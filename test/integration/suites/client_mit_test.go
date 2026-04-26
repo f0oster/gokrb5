@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"log"
-	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -19,36 +17,29 @@ import (
 	"github.com/f0oster/gokrb5/test/integration/framework"
 )
 
-// mitKDC is the shared MIT Kerberos KDC for every test in this binary.
-// Set up once in TestMain; nil if integration is disabled or container
-// startup failed (in which case individual tests skip).
-var mitKDC framework.KDC
+// requireMIT lazily starts the MIT KDC fixture on first call and
+// returns the shared handle. Skips the test if integration is
+// disabled or the fixture failed to start.
+var (
+	mitOnce sync.Once
+	mitKDC  framework.KDC
+	mitErr  error
+)
 
-func TestMain(m *testing.M) {
-	if os.Getenv(test.IntegrationEnvVar) != "1" {
-		os.Exit(m.Run())
-	}
-
-	ctx := context.Background()
-	kdc, cleanup, err := framework.StartMITKDC(ctx)
-	if err != nil {
-		log.Printf("MIT KDC setup failed: %v; integration tests will skip", err)
-		os.Exit(m.Run())
-	}
-	mitKDC = kdc
-	code := m.Run()
-	cleanup()
-	os.Exit(code)
-}
-
-// requireMIT ensures the test runs only when the integration env var is
-// set and the shared MIT KDC came up successfully. Returns the shared
-// KDC.
 func requireMIT(t *testing.T) framework.KDC {
 	t.Helper()
 	test.Integration(t)
+	mitOnce.Do(func() {
+		kdc, cleanup, err := framework.StartMITKDC(context.Background())
+		if err != nil {
+			mitErr = err
+			return
+		}
+		mitKDC = kdc
+		registerFixtureCleanup(cleanup)
+	})
 	if mitKDC == nil {
-		t.Skip("MIT KDC not available; check TestMain logs")
+		t.Skipf("MIT KDC not available: %v", mitErr)
 	}
 	return mitKDC
 }
