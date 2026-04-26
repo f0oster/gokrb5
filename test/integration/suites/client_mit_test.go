@@ -316,6 +316,57 @@ func TestClient_GetServiceTicket_Cached_MIT(t *testing.T) {
 	}
 }
 
+// TestClient_NetworkTryNextKDC_MIT verifies the client falls through
+// unreachable KDCs in the realm's kdc list and succeeds on the
+// reachable one.
+func TestClient_NetworkTryNextKDC_MIT(t *testing.T) {
+	kdc := requireMIT(t)
+	cfg, err := kdc.Config()
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+
+	homeRealm := kdc.Realm()
+	for i, r := range cfg.Realms {
+		if r.Realm == homeRealm {
+			cfg.Realms[i].KDC = append(
+				[]string{"127.0.0.1:1", "127.0.0.1:1"},
+				cfg.Realms[i].KDC...,
+			)
+			break
+		}
+	}
+
+	cl := client.NewWithPassword("preauth_user", homeRealm, framework.MITUserPassword, cfg)
+	defer cl.Destroy()
+	if err := cl.Login(); err != nil {
+		t.Fatalf("login should have fallen through unreachable KDCs: %v", err)
+	}
+}
+
+// TestClient_NoReachableKDC_MIT verifies that with no reachable KDC
+// in the realm's kdc list, Login returns a Networking_Error rather
+// than hanging or panicking.
+func TestClient_NoReachableKDC_MIT(t *testing.T) {
+	kdc := requireMIT(t)
+	cfg, err := kdc.Config()
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+
+	homeRealm := kdc.Realm()
+	for i, r := range cfg.Realms {
+		if r.Realm == homeRealm {
+			cfg.Realms[i].KDC = []string{"127.0.0.1:1"}
+			break
+		}
+	}
+
+	cl := client.NewWithPassword("preauth_user", homeRealm, framework.MITUserPassword, cfg)
+	defer cl.Destroy()
+	requireKrbError(t, cl.Login(), krberror.NetworkingError, "")
+}
+
 // TestClient_GetServiceTicket_CrossRealm_MIT exercises the cross-realm
 // TGS flow. The user authenticates to its home realm (HOME.GOKRB5) and
 // then requests a service ticket for a principal in the trusted realm
