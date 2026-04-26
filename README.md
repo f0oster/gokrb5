@@ -30,6 +30,15 @@ Tested against Active Directory (Windows Server 2022) and FreeIPA (MIT KDC).
 | aes256-cts-hmac-sha384-192 | 20 | 20 | 8009 |
 | rc4-hmac | 23 | -138 | 4757 |
 
+## Testing
+
+`test/integration/` runs gokrb5 against MIT KDC and Samba AD-DC containers via testcontainers-go. Requires Docker; set `INTEGRATION=1` to run.
+
+```sh
+cd test/integration
+INTEGRATION=1 go test ./...
+```
+
 ## Standards / RFCs
 
 * [RFC 2743](https://tools.ietf.org/html/rfc2743) - GSS-API v2, Update 1
