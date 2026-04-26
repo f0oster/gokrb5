@@ -70,6 +70,7 @@ type session struct {
 	sessionKey           types.EncryptionKey
 	sessionKeyExpiration time.Time
 	cancel               chan bool
+	done                 chan struct{}
 	mux                  sync.RWMutex
 }
 
@@ -116,13 +117,24 @@ func (s *session) update(tgt messages.Ticket, dep messages.EncKDCRepPart) {
 	s.sessionKeyExpiration = dep.KeyExpiration
 }
 
-// destroy will cancel any auto renewal of the session and set the expiration times to the current time
+// destroy will cancel any auto renewal of the session, wait for the
+// renewal goroutine to exit, and set the expiration times to the
+// current time.
 func (s *session) destroy() {
 	s.mux.Lock()
-	defer s.mux.Unlock()
 	if s.cancel != nil {
-		s.cancel <- true
+		select {
+		case s.cancel <- true:
+		default:
+		}
 	}
+	done := s.done
+	s.mux.Unlock()
+	if done != nil {
+		<-done
+	}
+	s.mux.Lock()
+	defer s.mux.Unlock()
 	s.endTime = time.Now().UTC()
 	s.renewTill = s.endTime
 	s.sessionKeyExpiration = s.endTime
@@ -186,8 +198,10 @@ func (cl *Client) enableAutoSessionRenewal(s *session) {
 	var timer *time.Timer
 	s.mux.Lock()
 	s.cancel = make(chan bool, 1)
+	s.done = make(chan struct{})
 	s.mux.Unlock()
 	go func(s *session) {
+		defer close(s.done)
 		for {
 			s.mux.RLock()
 			w := (s.endTime.Sub(time.Now().UTC()) * 5) / 6
