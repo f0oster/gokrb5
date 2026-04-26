@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/f0oster/gokrb5/client"
@@ -441,5 +442,35 @@ func TestClient_Enctypes_MIT(t *testing.T) {
 				t.Errorf("session key etype = %d, want %d", key.KeyType, id)
 			}
 		})
+	}
+}
+
+// TestClient_Login_Concurrent_MIT runs N concurrent Login calls on a
+// shared client.
+func TestClient_Login_Concurrent_MIT(t *testing.T) {
+	kdc := requireMIT(t)
+
+	cl, err := kdc.NewClient("preauth_user", framework.MITUserPassword)
+	if err != nil {
+		t.Fatalf("build client: %v", err)
+	}
+	defer cl.Destroy()
+
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := cl.Login(); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent login: %v", err)
 	}
 }
