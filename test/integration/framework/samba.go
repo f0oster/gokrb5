@@ -144,6 +144,8 @@ func StartSambaAD(ctx context.Context) (SambaAD, func(), error) {
 	s.ldapPort = ldapMapped.Int()
 	s.ldapsPort = ldapsMapped.Int()
 
+	logFixtureVersions(ctx, c, "Samba AD", "samba", "samba-ad-dc")
+
 	if err := s.provision(ctx); err != nil {
 		cleanup()
 		return nil, nil, fmt.Errorf("provision Samba: %w", err)

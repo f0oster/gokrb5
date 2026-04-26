@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"time"
 
@@ -133,6 +134,9 @@ func StartMITKDC(ctx context.Context) (KDC, func(), error) {
 			return nil, nil, fmt.Errorf("start container for %s: %w", spec.Name, err)
 		}
 		kdc.realms = append(kdc.realms, realmHandle{Spec: spec, Container: c, Endpoint: ep})
+	}
+	if len(kdc.realms) > 0 {
+		logFixtureVersions(ctx, kdc.realms[0].Container, "MIT KDC", "krb5-kdc")
 	}
 
 	for i := range kdc.realms {
@@ -346,6 +350,28 @@ func execIn(ctx context.Context, c testcontainers.Container, cmd []string) error
 		return fmt.Errorf("%v exited %d: %s", cmd, exitCode, string(out))
 	}
 	return nil
+}
+
+// logFixtureVersions logs the OS pretty name and dpkg-reported
+// versions of the named packages from inside c, prefixed with label.
+// Best-effort; failures are logged but don't abort.
+func logFixtureVersions(ctx context.Context, c testcontainers.Container, label string, packages ...string) {
+	parts := []string{`. /etc/os-release && echo "os=$PRETTY_NAME"`}
+	for _, pkg := range packages {
+		parts = append(parts, fmt.Sprintf(`dpkg-query -W -f='%s=${Version}\n' %s 2>/dev/null`, pkg, pkg))
+	}
+	cmd := strings.Join(parts, "; ")
+	_, reader, err := c.Exec(ctx, []string{"sh", "-c", cmd}, tcexec.Multiplexed())
+	if err != nil {
+		log.Printf("%s: version probe failed: %v", label, err)
+		return
+	}
+	out, _ := io.ReadAll(reader)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			log.Printf("%s: %s", label, line)
+		}
+	}
 }
 
 // extractKeytab returns the keytab bytes for the given principal.
