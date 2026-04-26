@@ -2,8 +2,8 @@ package framework
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -23,12 +23,16 @@ const (
 
 	sambaAdminPassword = "AdminPass1!"
 	sambaReadyFile     = "/var/run/samba-ready"
+	// sambaDCHostname is the DC's NetBIOS short name. The DC's FQDN
+	// becomes <sambaDCHostname>.<lowercased realm>; SPNs follow.
+	sambaDCHostname = "DC"
 )
 
 // SambaTopology declares what to provision into a Samba AD-DC fixture.
 type SambaTopology struct {
-	Realm string
-	Users []SambaUserSpec
+	Realm   string
+	Users   []SambaUserSpec
+	Keytabs []string // principals to export at provision time
 }
 
 // SambaUserSpec describes an AD user principal.
@@ -55,6 +59,7 @@ var adRealmTopology = SambaTopology{
 		{Name: "testuser1", Password: MITUserPassword},
 		{Name: "testuser2", Password: MITUserPassword},
 	},
+	Keytabs: []string{"testuser1", "testuser2"},
 }
 
 type sambaAD struct {
@@ -64,6 +69,7 @@ type sambaAD struct {
 	ldapHost  string
 	ldapPort  int
 	ldapsPort int
+	keytabs   map[string][]byte
 }
 
 // StartSambaAD starts a Samba AD-DC container and provisions the
@@ -93,7 +99,7 @@ func StartSambaAD(ctx context.Context) (SambaAD, func(), error) {
 		return nil, nil, fmt.Errorf("start Samba container: %w", err)
 	}
 
-	s := &sambaAD{topology: topo, container: c}
+	s := &sambaAD{topology: topo, container: c, keytabs: make(map[string][]byte)}
 	cleanup := func() {
 		_ = s.Close(context.Background())
 	}
@@ -155,6 +161,7 @@ func (s *sambaAD) provision(ctx context.Context) error {
 		"--use-rfc2307",
 		"--realm=" + s.topology.Realm,
 		"--domain=" + netbios,
+		"--host-name=" + sambaDCHostname,
 		"--adminpass=" + sambaAdminPassword,
 		"--server-role=dc",
 		"--dns-backend=SAMBA_INTERNAL",
@@ -171,6 +178,26 @@ func (s *sambaAD) provision(ctx context.Context) error {
 		if err := execIn(ctx, c, []string{"samba-tool", "user", "create", u.Name, u.Password}); err != nil {
 			return fmt.Errorf("samba-tool user create %s: %w", u.Name, err)
 		}
+	}
+
+	for _, principal := range s.topology.Keytabs {
+		path := "/tmp/" + strings.ReplaceAll(principal, "/", "_") + ".keytab"
+		if err := execIn(ctx, c, []string{
+			"samba-tool", "domain", "exportkeytab", path,
+			"--principal=" + principal,
+		}); err != nil {
+			return fmt.Errorf("exportkeytab %s: %w", principal, err)
+		}
+		rc, err := c.CopyFileFromContainer(ctx, path)
+		if err != nil {
+			return fmt.Errorf("copy keytab for %s: %w", principal, err)
+		}
+		data, readErr := io.ReadAll(rc)
+		_ = rc.Close()
+		if readErr != nil {
+			return fmt.Errorf("read keytab for %s: %w", principal, readErr)
+		}
+		s.keytabs[principal] = data
 	}
 
 	return nil
@@ -230,11 +257,18 @@ func (s *sambaAD) NewClient(username, password string) (*client.Client, error) {
 	return client.NewWithPassword(username, s.topology.Realm, password, cfg), nil
 }
 
-// Keytab is not yet supported by the Samba fixture. Returns an error
-// so tests that require keytabs surface a clear failure rather than a
-// nil-pointer surprise.
+// Keytab returns the keytab for the given principal. The principal
+// must be one the topology declared in Keytabs.
 func (s *sambaAD) Keytab(principal string) (*keytab.Keytab, error) {
-	return nil, errors.New("Samba fixture does not provision keytabs yet")
+	data, ok := s.keytabs[principal]
+	if !ok {
+		return nil, fmt.Errorf("no keytab provisioned for %q", principal)
+	}
+	kt := keytab.New()
+	if err := kt.Unmarshal(data); err != nil {
+		return nil, fmt.Errorf("unmarshal keytab for %s: %w", principal, err)
+	}
+	return kt, nil
 }
 
 func (s *sambaAD) LDAPEndpoint() (string, int)  { return s.ldapHost, s.ldapPort }
@@ -242,10 +276,9 @@ func (s *sambaAD) LDAPSEndpoint() (string, int) { return s.ldapHost, s.ldapsPort
 func (s *sambaAD) LDAPSPN() string              { return "ldap/" + dcHostname(s.topology.Realm) }
 
 // dcHostname returns the DC's FQDN as Samba registers it during
-// provisioning. Samba uses the lowercased realm with no host prefix
-// when dns_backend=SAMBA_INTERNAL.
+// provisioning: <sambaDCHostname>.<lowercased realm>.
 func dcHostname(realm string) string {
-	return strings.ToLower(realm)
+	return strings.ToLower(sambaDCHostname) + "." + strings.ToLower(realm)
 }
 
 func (s *sambaAD) Close(ctx context.Context) error {

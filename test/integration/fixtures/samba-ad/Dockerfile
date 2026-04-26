@@ -7,6 +7,7 @@ RUN apt-get update && \
         samba-ad-provision \
         samba-dsdb-modules \
         samba-vfs-modules \
+        winbind \
         attr \
         acl \
         ldb-tools \
