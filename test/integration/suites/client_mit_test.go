@@ -12,6 +12,7 @@ import (
 
 	"github.com/f0oster/gokrb5/client"
 	"github.com/f0oster/gokrb5/iana/errorcode"
+	"github.com/f0oster/gokrb5/iana/etypeID"
 	"github.com/f0oster/gokrb5/krberror"
 	"github.com/f0oster/gokrb5/test"
 	"github.com/f0oster/gokrb5/test/integration/framework"
@@ -398,5 +399,47 @@ func TestClient_GetServiceTicket_CrossRealm_MIT(t *testing.T) {
 	}
 	if len(sessionKey.KeyValue) == 0 {
 		t.Error("session key value is empty")
+	}
+}
+
+// TestClient_Enctypes_MIT runs Login + GetServiceTicket under each
+// supported AES enctype and asserts the session key etype matches
+// the requested one.
+func TestClient_Enctypes_MIT(t *testing.T) {
+	kdc := requireMIT(t)
+
+	enctypes := []string{
+		"aes256-cts-hmac-sha1-96",
+		"aes128-cts-hmac-sha1-96",
+		"aes256-cts-hmac-sha384-192",
+		"aes128-cts-hmac-sha256-128",
+	}
+
+	for _, et := range enctypes {
+		t.Run(et, func(t *testing.T) {
+			cfg, err := kdc.Config()
+			if err != nil {
+				t.Fatalf("config: %v", err)
+			}
+			id := etypeID.ETypesByName[et]
+			cfg.LibDefaults.DefaultTktEnctypes = []string{et}
+			cfg.LibDefaults.DefaultTktEnctypeIDs = []int32{id}
+			cfg.LibDefaults.DefaultTGSEnctypes = []string{et}
+			cfg.LibDefaults.DefaultTGSEnctypeIDs = []int32{id}
+
+			cl := client.NewWithPassword("preauth_user", kdc.Realm(), framework.MITUserPassword, cfg)
+			defer cl.Destroy()
+			if err := cl.Login(); err != nil {
+				t.Fatalf("login: %v", err)
+			}
+
+			_, key, err := cl.GetServiceTicket("HTTP/host.home.gokrb5")
+			if err != nil {
+				t.Fatalf("get service ticket: %v", err)
+			}
+			if key.KeyType != id {
+				t.Errorf("session key etype = %d, want %d", key.KeyType, id)
+			}
+		})
 	}
 }
