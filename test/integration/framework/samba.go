@@ -2,8 +2,12 @@ package framework
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,6 +16,17 @@ import (
 	"github.com/f0oster/gokrb5/keytab"
 	"github.com/testcontainers/testcontainers-go"
 )
+
+// init relaxes Go's x509 negative-serial check. Samba's auto-generated
+// LDAPS cert uses a negative serial number, which Go 1.23+ rejects by
+// default per RFC 5280. The relaxation only affects this test process.
+func init() {
+	if v := os.Getenv("GODEBUG"); v == "" {
+		_ = os.Setenv("GODEBUG", "x509negativeserial=1")
+	} else if !strings.Contains(v, "x509negativeserial") {
+		_ = os.Setenv("GODEBUG", v+",x509negativeserial=1")
+	}
+}
 
 const (
 	sambaFixtureDir = "../fixtures/samba-ad"
@@ -142,6 +157,10 @@ func StartSambaAD(ctx context.Context) (SambaAD, func(), error) {
 		cleanup()
 		return nil, nil, fmt.Errorf("wait for Samba KDC: %w", err)
 	}
+	if err := waitForSambaLDAPS(ctx, s); err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("wait for Samba LDAPS: %w", err)
+	}
 
 	return s, cleanup, nil
 }
@@ -228,6 +247,32 @@ func waitForSambaKDC(ctx context.Context, s *sambaAD) error {
 	}
 	return fmt.Errorf("Samba KDC at %s:%d not ready within %d attempts: %v",
 		s.endpoint.Host, s.endpoint.Port, maxAttempts, lastErr)
+}
+
+// waitForSambaLDAPS polls the LDAPS port with full TLS handshakes
+// until one completes. The TCP port may bind before the LDAPS service
+// can complete a handshake; a successful handshake confirms the
+// service is genuinely accepting clients.
+func waitForSambaLDAPS(ctx context.Context, s *sambaAD) error {
+	addr := net.JoinHostPort(s.ldapHost, strconv.Itoa(s.ldapsPort))
+	const maxAttempts = 100
+	var lastErr error
+	for i := 0; i < maxAttempts; i++ {
+		d := net.Dialer{Timeout: 500 * time.Millisecond}
+		conn, err := tls.DialWithDialer(&d, "tcp", addr, &tls.Config{InsecureSkipVerify: true})
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		lastErr = err
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	return fmt.Errorf("Samba LDAPS at %s not ready within %d attempts: %v",
+		addr, maxAttempts, lastErr)
 }
 
 // netbiosName returns the first label of a realm name, used as the
