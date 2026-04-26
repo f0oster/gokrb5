@@ -4,15 +4,16 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
-	"net"
 	"strings"
 	"time"
 
 	"github.com/f0oster/gokrb5/client"
 	"github.com/f0oster/gokrb5/config"
 	"github.com/f0oster/gokrb5/keytab"
+	"github.com/f0oster/gokrb5/krberror"
 	"github.com/testcontainers/testcontainers-go"
 	tcexec "github.com/testcontainers/testcontainers-go/exec"
 )
@@ -286,24 +287,46 @@ func signalReady(ctx context.Context, c testcontainers.Container) error {
 }
 
 func waitForPort(ctx context.Context, h realmHandle) error {
-	addr := fmt.Sprintf("%s:%d", h.Endpoint.Host, h.Endpoint.Port)
+	cfg, err := config.NewFromString(GenerateKRB5Conf([]RealmEndpoint{h.Endpoint}))
+	if err != nil {
+		return fmt.Errorf("build probe config: %w", err)
+	}
 	const maxAttempts = 50
 	var lastErr error
 	for i := 0; i < maxAttempts; i++ {
-		d := net.Dialer{Timeout: 200 * time.Millisecond}
-		conn, err := d.DialContext(ctx, "tcp", addr)
-		if err == nil {
-			_ = conn.Close()
+		if err := probeKDC(cfg, h.Spec.Name); err == nil {
 			return nil
+		} else {
+			lastErr = err
 		}
-		lastErr = err
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	return fmt.Errorf("KDC port %s did not accept connections within %d attempts: %v", addr, maxAttempts, lastErr)
+	return fmt.Errorf("KDC at %s:%d not ready within %d attempts: %v",
+		h.Endpoint.Host, h.Endpoint.Port, maxAttempts, lastErr)
+}
+
+// probeKDC sends a real AS-REQ for an unknown principal. A KDCError
+// response (e.g. KDC_ERR_C_PRINCIPAL_UNKNOWN) means the round-trip
+// path is live; a Networking_Error means the path isn't ready yet.
+// krb5kdc silently drops malformed TCP messages, so a byte-level
+// probe wouldn't distinguish "KDC not ready" from "KDC ignored
+// garbage" — only a well-formed Kerberos exchange does.
+func probeKDC(cfg *config.Config, realm string) error {
+	cl := client.NewWithPassword("__probe__", realm, "x", cfg)
+	defer cl.Destroy()
+	err := cl.Login()
+	if err == nil {
+		return nil
+	}
+	var ke krberror.Krberror
+	if errors.As(err, &ke) && ke.RootCause == krberror.KDCError {
+		return nil
+	}
+	return err
 }
 
 // kadminLocal runs a kadmin.local query inside c.
