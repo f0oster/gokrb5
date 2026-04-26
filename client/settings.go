@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync/atomic"
 )
 
 // Settings holds optional client settings.
 type Settings struct {
-	assumePreAuthentication bool
-	preAuthEType            int32
+	assumePreAuthentication atomic.Bool
+	preAuthEType            atomic.Int32
 	logger                  *log.Logger
 }
 
@@ -32,13 +33,13 @@ func NewSettings(settings ...func(*Settings)) *Settings {
 // s := NewSettings(AssumePreAuthentication(true))
 func AssumePreAuthentication(b bool) func(*Settings) {
 	return func(s *Settings) {
-		s.assumePreAuthentication = b
+		s.assumePreAuthentication.Store(b)
 	}
 }
 
 // AssumePreAuthentication indicates if the client should proactively assume using pre-authentication.
 func (s *Settings) AssumePreAuthentication() bool {
-	return s.assumePreAuthentication
+	return s.assumePreAuthentication.Load()
 }
 
 // Logger used to configure client with a logger.
@@ -65,7 +66,7 @@ func (cl *Client) Log(format string, v ...interface{}) {
 // JSON returns a JSON representation of the settings.
 func (s *Settings) JSON() (string, error) {
 	js := jsonSettings{
-		AssumePreAuthentication: s.assumePreAuthentication,
+		AssumePreAuthentication: s.assumePreAuthentication.Load(),
 	}
 	b, err := json.MarshalIndent(js, "", "  ")
 	if err != nil {

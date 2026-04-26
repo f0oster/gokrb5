@@ -35,7 +35,7 @@ func (cl *Client) ASExchange(realm string, ASReq messages.ASReq, referral int) (
 			switch e.ErrorCode {
 			case errorcode.KDC_ERR_PREAUTH_REQUIRED, errorcode.KDC_ERR_PREAUTH_FAILED:
 				// From now on assume this client will need to do this pre-auth and set the PAData
-				cl.settings.assumePreAuthentication = true
+				cl.settings.assumePreAuthentication.Store(true)
 				err = setPAData(cl, &e, &ASReq)
 				if err != nil {
 					return messages.ASRep{}, krberror.Errorf(err, krberror.KRBMsgError, "AS Exchange Error: failed setting AS_REQ PAData for pre-authentication required")
@@ -89,7 +89,7 @@ func setPAData(cl *Client, krberr *messages.KRBError, ASReq *messages.ASReq) err
 		if krberr == nil {
 			// This is not in response to an error from the KDC. It is preemptive or renewal
 			// There is no KRB Error that tells us the etype to use
-			etn := cl.settings.preAuthEType // Use the etype that may have previously been negotiated
+			etn := cl.settings.preAuthEType.Load() // Use the etype that may have previously been negotiated
 			if etn == 0 {
 				etn = int32(cl.Config.LibDefaults.PreferredPreauthTypes[0]) // Resort to config
 			}
@@ -107,7 +107,7 @@ func setPAData(cl *Client, krberr *messages.KRBError, ASReq *messages.ASReq) err
 			if err != nil {
 				return krberror.Errorf(err, krberror.EncryptingError, "error getting etype for pre-auth encryption")
 			}
-			cl.settings.preAuthEType = et.GetETypeID() // Set the etype that has been defined for potential future use
+			cl.settings.preAuthEType.Store(et.GetETypeID()) // Set the etype that has been defined for potential future use
 			key, kvno, err = cl.Key(et, 0, krberr)
 			if err != nil {
 				return krberror.Errorf(err, krberror.EncryptingError, "error getting key from credentials")
