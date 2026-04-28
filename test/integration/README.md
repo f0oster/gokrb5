@@ -1,8 +1,25 @@
 # Integration tests
 
-Container-based integration tests. Spins up real Kerberos KDCs in Docker; tests run against them.
+The gokrb5 client exercised against real KDCs running in containers.
 
-The integration tests live in their own Go sub-module so the testcontainers-go dependency does not pollute the main module's dependency graph.
+## What's tested
+
+The gokrb5 client against:
+
+- An MIT KDC with two realms joined by a one-way trust.
+- A Samba AD-DC.
+- A third-party SPNEGO HTTP acceptor keyed to either KDC.
+
+Coverage:
+
+- AS exchange (password and keytab), preauth required and not, invalid password, unknown principal.
+- TGS exchange, including ticket caching, unknown SPN, and cross-realm referrals.
+- Network fallthrough and no-reachable-KDC error paths.
+- Encryption-type matrix across AES-SHA1 and AES-SHA2.
+- Concurrent `Login` on a shared client.
+- SASL/GSSAPI bind over plain LDAP (none, integrity, confidentiality layers).
+- SASL/GSSAPI bind over LDAPS with RFC 5929 channel bindings (matching and tampered).
+- SPNEGO HTTP authentication.
 
 ## Requirements
 
@@ -16,56 +33,37 @@ cd test/integration
 INTEGRATION=1 go test ./...
 ```
 
-Without `INTEGRATION=1` tests skip via `test.Integration(t)`. Without Docker available they skip via `framework.SkipIfNoDocker(t)`.
+Without `INTEGRATION=1` or without Docker, tests skip cleanly.
 
-## Backends
+Per-test status with `-v`. Framework log lines are prefixed `[fixture]`:
 
-| Backend | Entry point | Cold start |
-|---|---|---|
-| MIT krb5 | `framework.StartMITKDC(ctx)` | ~5s |
-
-## Adding tests
-
-Place new test files under `suites/`. Stand up the fixture once per test binary in `TestMain` and share it across tests:
-
-```go
-package suites
-
-import (
-    "context"
-    "log"
-    "os"
-    "testing"
-
-    "github.com/f0oster/gokrb5/test"
-    "github.com/f0oster/gokrb5/test/integration/framework"
-)
-
-var mitKDC framework.KDC
-
-func TestMain(m *testing.M) {
-    if os.Getenv(test.IntegrationEnvVar) != "1" {
-        os.Exit(m.Run())
-    }
-    kdc, cleanup, err := framework.StartMITKDC(context.Background())
-    if err != nil {
-        log.Printf("MIT KDC setup failed: %v; tests will skip", err)
-        os.Exit(m.Run())
-    }
-    mitKDC = kdc
-    code := m.Run()
-    cleanup()
-    os.Exit(code)
-}
+```sh
+INTEGRATION=1 go test -v ./...
 ```
 
-The KDCs are read-only across tests (each test acquires fresh tickets; nothing mutates the principal database), so a single shared fixture is fine for typical tests.
+testcontainers-go's progress output is silenced by default. Set `TC_VERBOSE=1` to opt back in.
 
-## Adding a backend
+## Adding a test
 
-Each KDC backend has two parts:
+Pick the file matching the backend you target:
 
-1. `fixtures/<name>/` — Dockerfile that installs the KDC binaries. The image is generic; the framework provisions realms and principals at runtime via exec.
-2. `framework/<name>.go` — implements the `KDC` interface, declares the topology to provision, and wraps testcontainers-go to manage the containers' lifecycle.
+| Backend | File |
+|---|---|
+| MIT | `client_mit_test.go` |
+| Samba AD | `client_samba_ad_test.go` |
+| SASL/LDAP against Samba AD | `sasl_ldap_samba_ad_test.go` |
 
-`mit-kdc/` and `mit.go` are the reference implementations.
+Use the matching require helper to obtain the fixture:
+
+| Helper | Returns |
+|---|---|
+| `requireMIT(t)` | `*framework.MITKDC` |
+| `requireAD(t)` | `framework.ActiveDirectory` |
+| `requireMITHTTPAcceptor(t)` | `framework.HTTPAcceptor` |
+| `requireADHTTPAcceptor(t)` | `framework.HTTPAcceptor` |
+
+Provisioned principals available to tests:
+
+- MIT (`HOME.GOKRB5`): `preauth_user`, `nopreauth_user`, `HTTP/host.home.gokrb5`.
+- MIT (`TRUSTED.GOKRB5`): `HTTP/host.trusted.gokrb5`.
+- Samba AD (`AD.GOKRB5`): `testuser1`, `testuser2`, `HTTP/web.ad.gokrb5`.

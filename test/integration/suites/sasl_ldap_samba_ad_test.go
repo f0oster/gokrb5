@@ -14,7 +14,7 @@ import (
 )
 
 // dialLDAP opens a plain TCP connection to the AD-DC's LDAP port.
-func dialLDAP(t *testing.T, kdc framework.SambaAD) net.Conn {
+func dialLDAP(t *testing.T, kdc framework.ActiveDirectory) net.Conn {
 	t.Helper()
 	host, port := kdc.LDAPEndpoint()
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
@@ -25,10 +25,9 @@ func dialLDAP(t *testing.T, kdc framework.SambaAD) net.Conn {
 	return conn
 }
 
-// dialLDAPS opens a TLS connection to the AD-DC's LDAPS port and
-// returns the *tls.Conn so callers can extract channel bindings from
-// the connection state.
-func dialLDAPS(t *testing.T, kdc framework.SambaAD) *tls.Conn {
+// dialLDAPS opens a TLS connection to the AD-DC's LDAPS port. Returns
+// *tls.Conn so callers can extract channel bindings from the state.
+func dialLDAPS(t *testing.T, kdc framework.ActiveDirectory) *tls.Conn {
 	t.Helper()
 	host, port := kdc.LDAPSEndpoint()
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
@@ -43,9 +42,9 @@ func dialLDAPS(t *testing.T, kdc framework.SambaAD) *tls.Conn {
 }
 
 // loggedInADClient returns a krb5 client logged in as testuser1.
-func loggedInADClient(t *testing.T, kdc framework.SambaAD) *client.Client {
+func loggedInADClient(t *testing.T, kdc framework.ActiveDirectory) *client.Client {
 	t.Helper()
-	cl, err := kdc.NewClient("testuser1", framework.MITUserPassword)
+	cl, err := kdc.NewClient("testuser1", framework.SambaUserPassword)
 	if err != nil {
 		t.Fatalf("build client: %v", err)
 	}
@@ -68,11 +67,8 @@ func channelBindingsFor(t *testing.T, conn *tls.Conn) *gssapi.ChannelBindings {
 	return bindings
 }
 
-// TestSASL_LDAP_Bind_NoLayer_Refused_AD verifies that Samba refuses
-// a SASL bind over plain LDAP with no per-message security layer.
-// AD requires either TLS or a SASL integrity/confidentiality layer
-// for SASL binds; the server returns strongerAuthRequired (8) when
-// the client offers neither.
+// TestSASL_LDAP_Bind_NoLayer_Refused_AD verifies a plain-LDAP SASL
+// bind with no security layer is refused with strongerAuthRequired (8).
 func TestSASL_LDAP_Bind_NoLayer_Refused_AD(t *testing.T) {
 	kdc := requireAD(t)
 
@@ -97,8 +93,7 @@ func TestSASL_LDAP_Bind_NoLayer_Refused_AD(t *testing.T) {
 }
 
 // TestSASL_LDAP_Bind_Integrity_AD binds with the integrity layer and
-// exercises a wrapped (signed) rootDSE search to confirm per-message
-// MIC tokens roundtrip.
+// runs a wrapped rootDSE search to roundtrip a MIC token.
 func TestSASL_LDAP_Bind_Integrity_AD(t *testing.T) {
 	kdc := requireAD(t)
 
@@ -123,9 +118,8 @@ func TestSASL_LDAP_Bind_Integrity_AD(t *testing.T) {
 	}
 }
 
-// TestSASL_LDAP_Bind_Confidentiality_AD binds with the
-// confidentiality layer (sealed WrapTokens) and exercises a wrapped
-// rootDSE search to confirm the sealed roundtrip works.
+// TestSASL_LDAP_Bind_Confidentiality_AD binds with confidentiality
+// (sealed WrapTokens) and runs a wrapped rootDSE search.
 func TestSASL_LDAP_Bind_Confidentiality_AD(t *testing.T) {
 	kdc := requireAD(t)
 
@@ -154,9 +148,7 @@ func TestSASL_LDAP_Bind_Confidentiality_AD(t *testing.T) {
 }
 
 // TestSASL_LDAPS_CBT_AD runs a SASL/GSSAPI bind over LDAPS with
-// matching channel bindings (RFC 5929 tls-server-end-point). Validates
-// that the bindings derived by gssapi.NewTLSChannelBindingsFromState
-// are accepted by Samba.
+// matching channel bindings (RFC 5929 tls-server-end-point).
 func TestSASL_LDAPS_CBT_AD(t *testing.T) {
 	kdc := requireAD(t)
 

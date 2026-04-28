@@ -13,19 +13,16 @@ type RealmEndpoint struct {
 	Port  int
 }
 
-// GenerateKRB5Conf produces a krb5.conf string that points each realm
-// at its own KDC endpoint. The first endpoint's realm becomes the
-// default_realm. domain_realm mappings are derived from each realm
-// name (lowercased) and apply to both the realm's apex and any
-// subdomain. DNS-based KDC discovery and hostname canonicalisation
-// are disabled so tests do not depend on any DNS configuration on the
-// test host.
+// GenerateKRB5Conf produces a krb5.conf string covering all endpoints.
+// The first endpoint's realm is the default_realm. DNS-based KDC and
+// realm discovery is disabled so tests don't depend on host DNS.
 func GenerateKRB5Conf(endpoints []RealmEndpoint) string {
 	if len(endpoints) == 0 {
 		return ""
 	}
 
 	var b strings.Builder
+	// udp_preference_limit = 1 forces TCP for test reliability.
 	fmt.Fprintf(&b, `[libdefaults]
     default_realm = %s
     dns_lookup_realm = false

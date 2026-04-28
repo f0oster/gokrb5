@@ -109,16 +109,10 @@ func (l *saslLDAPConn) readLDAPMessage() ([]byte, error) {
 	return append(hdr, body...), nil
 }
 
-// SASLBindGSSAPI runs the multi-roundtrip SASL/GSSAPI bind on conn.
-// The Initiator drives the GSSAPI exchange; this function handles
-// the LDAP wire framing and SASL state machine. Returns the
-// established SecurityContext on success.
-//
-// The Initiator must be configured with the desired security
-// properties (mutual auth, channel bindings, confidentiality) before
-// being passed in. chosenLayer must be one of
-// gssapi.SASLSecurityNone/Integrity/Confidential and is sent in the
-// final SASL client response.
+// SASLBindGSSAPI runs a SASL/GSSAPI bind on conn and returns the
+// established SecurityContext. init must be pre-configured (mutual
+// auth, channel bindings, confidentiality). chosenLayer must be one
+// of gssapi.SASLSecurityNone/Integrity/Confidential.
 func SASLBindGSSAPI(conn net.Conn, init *gssapi.Initiator, chosenLayer byte) (*gssapi.SecurityContext, error) {
 	ldap := &saslLDAPConn{conn: conn}
 
@@ -130,7 +124,11 @@ func SASLBindGSSAPI(conn net.Conn, init *gssapi.Initiator, chosenLayer byte) (*g
 	var ctx *gssapi.SecurityContext
 	token := apReq
 
-	for {
+	// RFC 4752 normal flow completes in 3-4 round-trips; cap at 8 so
+	// a misbehaving server (or a state-machine bug) surfaces as a
+	// clear error instead of a test-timeout hang.
+	const maxRounds = 8
+	for range maxRounds {
 		code, serverCreds, err := ldap.saslBind("GSSAPI", token)
 		if err != nil {
 			return nil, fmt.Errorf("SASL bind transport: %w", err)
@@ -182,12 +180,12 @@ func SASLBindGSSAPI(conn net.Conn, init *gssapi.Initiator, chosenLayer byte) (*g
 			return nil, fmt.Errorf("build SASL client response: %w", err)
 		}
 	}
+	return nil, fmt.Errorf("SASL bind did not complete within %d rounds", maxRounds)
 }
 
 // WrappedRootDSESearch sends a wrapped rootDSE search and returns
-// the unwrapped string value of the first attribute. For exercising
-// per-message protection after a SASL bind that negotiated integrity
-// or confidentiality.
+// the unwrapped first attribute value. Exercises per-message
+// protection after an integrity/confidentiality SASL bind.
 func WrappedRootDSESearch(conn net.Conn, ctx *gssapi.SecurityContext, attribute string) (string, error) {
 	ldap := &saslLDAPConn{conn: conn, msgID: 1}
 
@@ -306,8 +304,8 @@ func extractResultCode(msg []byte) (int, error) {
 }
 
 // parseSearchResult extracts the first attribute value from a
-// SearchResultEntry response. Returns a placeholder string if the
-// response shape doesn't match what the rootDSE search expects.
+// SearchResultEntry, or a "(...)" placeholder if the shape is
+// unexpected.
 func parseSearchResult(msg []byte) string {
 	offset := 0
 	if len(msg) < 2 {
@@ -432,7 +430,13 @@ func marshalOctetStringBytes(b []byte) []byte {
 	return append(append([]byte{0x04}, lb...), b...)
 }
 
-func mustMarshal(v any) []byte { b, _ := asn1.Marshal(v); return b }
+func mustMarshal(v any) []byte {
+	b, err := asn1.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
 
 func concat(s ...[]byte) []byte {
 	var r []byte

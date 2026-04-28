@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/f0oster/gokrb5/keytab"
 	"github.com/testcontainers/testcontainers-go"
 )
 
@@ -20,28 +21,19 @@ const (
 	krbhttpReadyFile  = "/var/run/krbhttp-ready"
 )
 
-// HTTPAcceptor is a containerised Apache instance running
-// mod_auth_gssapi, configured with a keytab provisioned by a KDC
-// fixture. The acceptor protects the path /spnego with GSSAPI/SPNEGO.
-//
-// mod_auth_gssapi does not contact the KDC at request time; it
-// decrypts the AP-REQ inside the SPNEGO token using the keytab. The
-// container therefore does not require network reachability to the
-// KDC, only the keytab and the realm name.
+// HTTPAcceptor is a containerised Apache+mod_auth_gssapi instance
+// that protects /spnego with GSSAPI/SPNEGO using a fixture-provisioned
+// keytab.
 type HTTPAcceptor interface {
 	// Endpoint returns the host and TCP port the test client dials.
 	Endpoint() (host string, port int)
-	// BaseURL returns "http://host:port" with no trailing slash.
+	// BaseURL returns "http://host:port".
 	BaseURL() string
-	// SPN returns the canonical service principal name the acceptor
-	// is configured for. The test client must specify this SPN
-	// explicitly when constructing a SPNEGO request, because the
-	// dial address is a random localhost port and would otherwise
-	// be used to derive a non-canonical SPN.
+	// SPN returns the SPN the acceptor is keyed for. The client must
+	// specify this explicitly because the dial address is a random
+	// localhost port and wouldn't derive the canonical SPN.
 	SPN() string
-	// Logs returns the container's accumulated stdout/stderr output.
-	// Apache's error and access logs are wired to stderr/stdout in
-	// the image, so this captures both alongside any startup output.
+	// Logs returns the container's stdout/stderr.
 	Logs(ctx context.Context) ([]byte, error)
 	// Close terminates the container.
 	Close(ctx context.Context) error
@@ -54,18 +46,12 @@ type httpAcceptor struct {
 	spn       string
 }
 
-// StartHTTPAcceptor builds and starts an Apache container, copies the
-// service keytab for spn and a minimal krb5.conf into it, and returns
-// a handle the test code can dial. kdc must already have provisioned
-// spn (i.e. spn appears in the topology's Services or Keytabs lists).
+// StartHTTPAcceptor builds and starts an Apache acceptor container
+// using kdc's keytab for spn. kdc must already have provisioned spn.
 func StartHTTPAcceptor(ctx context.Context, kdc KDC, spn string) (HTTPAcceptor, func(), error) {
 	kt, err := kdc.Keytab(spn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("retrieve keytab for %s: %w", spn, err)
-	}
-	ktBytes, err := kt.Marshal()
-	if err != nil {
-		return nil, nil, fmt.Errorf("marshal keytab for %s: %w", spn, err)
 	}
 
 	req := testcontainers.ContainerRequest{
@@ -107,7 +93,7 @@ func StartHTTPAcceptor(ctx context.Context, kdc KDC, spn string) (HTTPAcceptor, 
 
 	logFixtureVersions(ctx, c, "krbhttp", "apache2", "libapache2-mod-auth-gssapi")
 
-	if err := a.provision(ctx, kdc.Realm(), ktBytes); err != nil {
+	if err := a.provision(ctx, kdc.Realm(), kt); err != nil {
 		cleanup()
 		return nil, nil, fmt.Errorf("provision krbhttp: %w", err)
 	}
@@ -125,10 +111,14 @@ func StartHTTPAcceptor(ctx context.Context, kdc KDC, spn string) (HTTPAcceptor, 
 	return a, cleanup, nil
 }
 
-func (a *httpAcceptor) provision(ctx context.Context, realm string, keytab []byte) error {
+func (a *httpAcceptor) provision(ctx context.Context, realm string, kt *keytab.Keytab) error {
 	c := a.container
 
-	if err := c.CopyToContainer(ctx, keytab, "/etc/apache2/http.keytab", 0o600); err != nil {
+	ktBytes, err := kt.Marshal()
+	if err != nil {
+		return fmt.Errorf("marshal keytab: %w", err)
+	}
+	if err := c.CopyToContainer(ctx, ktBytes, "/etc/apache2/http.keytab", 0o600); err != nil {
 		return fmt.Errorf("copy keytab: %w", err)
 	}
 	if err := execIn(ctx, c, []string{"chown", "www-data:www-data", "/etc/apache2/http.keytab"}); err != nil {
@@ -144,17 +134,19 @@ func signalKrbHTTPReady(ctx context.Context, c testcontainers.Container) error {
 	return execIn(ctx, c, []string{"touch", krbhttpReadyFile})
 }
 
-// waitForKrbHTTP polls the acceptor's /spnego endpoint until it returns
-// 401 Unauthorized with a WWW-Authenticate: Negotiate header, which
-// confirms apache started, mod_auth_gssapi loaded, and the site is
-// serving the protected location.
+// waitForKrbHTTP polls /spnego until apache returns 401 Negotiate,
+// confirming mod_auth_gssapi is serving the protected location.
 func waitForKrbHTTP(ctx context.Context, a *httpAcceptor) error {
 	addr := net.JoinHostPort(a.host, strconv.Itoa(a.port))
 	url := "http://" + addr + "/spnego/"
-	const maxAttempts = 100
+	const maxAttempts = 25
 	var lastErr error
 	for range maxAttempts {
-		resp, err := http.Get(url)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return fmt.Errorf("build probe request: %w", err)
+		}
+		resp, err := http.DefaultClient.Do(req)
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusUnauthorized &&
@@ -171,13 +163,12 @@ func waitForKrbHTTP(ctx context.Context, a *httpAcceptor) error {
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
-	return fmt.Errorf("krbhttp at %s not ready within %d attempts: %v", addr, maxAttempts, lastErr)
+	return fmt.Errorf("krbhttp at %s not ready within %d attempts: %w", addr, maxAttempts, lastErr)
 }
 
-// renderAcceptorKrb5Conf produces a minimal krb5.conf for the Apache
-// container. mod_auth_gssapi never dials the KDC for SPNEGO acceptance
-// so the kdc address is a placeholder; only the realm name and
-// enctypes matter.
+// renderAcceptorKrb5Conf returns a minimal krb5.conf for the
+// acceptor. The kdc address is a placeholder: mod_auth_gssapi
+// validates AP-REQs from the keytab and never dials.
 func renderAcceptorKrb5Conf(realm string) string {
 	return fmt.Sprintf(`[libdefaults]
     default_realm = %s

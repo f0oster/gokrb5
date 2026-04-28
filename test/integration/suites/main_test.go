@@ -1,15 +1,16 @@
 package suites
 
 import (
+	"context"
 	"os"
 	"sync"
 	"testing"
 
 	"github.com/f0oster/gokrb5/test"
+	"github.com/f0oster/gokrb5/test/integration/framework"
 )
 
-// fixtureCleanups holds tear-down functions registered by per-fixture
-// require helpers. Run in reverse order at the end of TestMain.
+// fixtureCleanups runs in reverse order at the end of TestMain.
 var (
 	fixtureCleanupsMu sync.Mutex
 	fixtureCleanups   []func()
@@ -21,11 +22,8 @@ func registerFixtureCleanup(f func()) {
 	fixtureCleanupsMu.Unlock()
 }
 
-// TestMain skips entirely without INTEGRATION=1; otherwise runs the
-// suite and tears down whichever fixtures the tests caused to start.
-// Fixture startup is lazy via require helpers (requireMIT, requireAD)
-// so a test that uses one fixture doesn't pay startup cost for the
-// others.
+// TestMain skips without INTEGRATION=1; otherwise runs the suite and
+// tears down any fixtures lazy-started via require helpers.
 func TestMain(m *testing.M) {
 	if os.Getenv(test.IntegrationEnvVar) != "1" {
 		os.Exit(m.Run())
@@ -37,4 +35,20 @@ func TestMain(m *testing.M) {
 	}
 	fixtureCleanupsMu.Unlock()
 	os.Exit(code)
+}
+
+// dumpAcceptorLogsOnFailure prints the acceptor's stdout/stderr if
+// the test failed, so a 401/403/500 from mod_auth_gssapi can be
+// diagnosed without re-running the test.
+func dumpAcceptorLogsOnFailure(t *testing.T, a framework.HTTPAcceptor) {
+	t.Helper()
+	if !t.Failed() {
+		return
+	}
+	out, err := a.Logs(context.Background())
+	if err != nil {
+		t.Logf("acceptor logs: read failed: %v", err)
+		return
+	}
+	t.Logf("acceptor container logs:\n%s", string(out))
 }

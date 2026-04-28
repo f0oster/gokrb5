@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -16,17 +15,6 @@ import (
 	"github.com/f0oster/gokrb5/keytab"
 	"github.com/testcontainers/testcontainers-go"
 )
-
-// init relaxes Go's x509 negative-serial check. Samba's auto-generated
-// LDAPS cert uses a negative serial number, which Go 1.23+ rejects by
-// default per RFC 5280. The relaxation only affects this test process.
-func init() {
-	if v := os.Getenv("GODEBUG"); v == "" {
-		_ = os.Setenv("GODEBUG", "x509negativeserial=1")
-	} else if !strings.Contains(v, "x509negativeserial") {
-		_ = os.Setenv("GODEBUG", v+",x509negativeserial=1")
-	}
-}
 
 const (
 	sambaFixtureDir = "../fixtures/samba-ad"
@@ -38,65 +26,39 @@ const (
 
 	sambaAdminPassword = "AdminPass1!"
 	sambaReadyFile     = "/var/run/samba-ready"
-	// sambaDCHostname is the DC's NetBIOS short name. The DC's FQDN
-	// becomes <sambaDCHostname>.<lowercased realm>; SPNs follow.
+	// sambaDCHostname is the DC's NetBIOS short name; the FQDN
+	// becomes <sambaDCHostname>.<lowercased realm>.
 	sambaDCHostname = "DC"
+
+	// SambaUserPassword is the password set on every AD user and
+	// service account.
+	SambaUserPassword = "Password1!"
 )
 
-// SambaTopology declares what to provision into a Samba AD-DC fixture.
-type SambaTopology struct {
-	Realm    string
-	Users    []SambaUserSpec
-	Services []SambaServiceSpec
-	Keytabs  []string // additional principals to export at provision time
-}
+const sambaHTTPSPN = "HTTP/web.ad.gokrb5"
 
-// SambaUserSpec describes an AD user principal.
-type SambaUserSpec struct {
-	Name     string
-	Password string
-}
-
-// SambaServiceSpec describes a service whose SPN is attached to a
-// dedicated AD account. The framework creates the account, registers
-// the SPN, and exports a keytab keyed by the SPN.
-type SambaServiceSpec struct {
-	AccountName string // sAMAccountName for the underlying account
-	SPN         string // service principal, e.g. "HTTP/web.ad.gokrb5"
-	Password    string
-}
-
-// SambaHTTPSPN is the SPN of the HTTP service account the AD topology
-// provisions. Tests pass this to framework.StartHTTPAcceptor.
-const SambaHTTPSPN = "HTTP/web.ad.gokrb5"
-
-// SambaAD is the test-side handle to a containerised Samba AD-DC.
-// Adds LDAP/LDAPS endpoints on top of the KDC interface so SASL/LDAP
-// tests can dial the directory service.
-type SambaAD interface {
-	KDC
-	LDAPEndpoint() (host string, port int)
-	LDAPSEndpoint() (host string, port int)
-	LDAPSPN() string
-}
-
-// adRealmTopology mirrors the test scenarios that suites/client_ad_test.go
-// expects: one realm, two AD users, plus an HTTP service account used
-// by the krbhttp acceptor fixture.
-var adRealmTopology = SambaTopology{
-	Realm: "AD.GOKRB5",
-	Users: []SambaUserSpec{
-		{Name: "testuser1", Password: MITUserPassword},
-		{Name: "testuser2", Password: MITUserPassword},
+// adRealmTopology: two test users plus an HTTP service account for
+// the krbhttp acceptor.
+var adRealmTopology = Topology{
+	Realms: []RealmSpec{
+		{
+			Name: "AD.GOKRB5",
+			Users: []UserSpec{
+				{Name: "testuser1", Password: SambaUserPassword, WithKeytab: true},
+				{Name: "testuser2", Password: SambaUserPassword, WithKeytab: true},
+			},
+			Services: []ServiceSpec{
+				{
+					SPN:     sambaHTTPSPN,
+					Account: &ServiceAccount{Name: "websvc", Password: SambaUserPassword},
+				},
+			},
+		},
 	},
-	Services: []SambaServiceSpec{
-		{AccountName: "websvc", SPN: SambaHTTPSPN, Password: MITUserPassword},
-	},
-	Keytabs: []string{"testuser1", "testuser2"},
 }
 
 type sambaAD struct {
-	topology  SambaTopology
+	topology  Topology
 	container testcontainers.Container
 	endpoint  RealmEndpoint
 	ldapHost  string
@@ -105,11 +67,16 @@ type sambaAD struct {
 	keytabs   map[string][]byte
 }
 
-// StartSambaAD starts a Samba AD-DC container and provisions the
-// realm in adRealmTopology. Returns the SambaAD handle and a cleanup
-// function that terminates the container.
-func StartSambaAD(ctx context.Context) (SambaAD, func(), error) {
+// StartSambaAD starts a Samba AD-DC container and provisions
+// adRealmTopology. Returns the handle and a cleanup function.
+func StartSambaAD(ctx context.Context) (ActiveDirectory, func(), error) {
 	topo := adRealmTopology
+	if len(topo.Realms) != 1 {
+		return nil, nil, fmt.Errorf("Samba fixture currently provisions a single realm; topology has %d", len(topo.Realms))
+	}
+	if len(topo.Trusts) != 0 {
+		return nil, nil, fmt.Errorf("Samba fixture does not yet provision trusts; topology has %d", len(topo.Trusts))
+	}
 
 	req := testcontainers.ContainerRequest{
 		FromDockerfile: testcontainers.FromDockerfile{
@@ -157,7 +124,7 @@ func StartSambaAD(ctx context.Context) (SambaAD, func(), error) {
 		cleanup()
 		return nil, nil, fmt.Errorf("read Samba LDAPS port: %w", err)
 	}
-	s.endpoint = RealmEndpoint{Realm: topo.Realm, Host: host, Port: kdcMapped.Int()}
+	s.endpoint = RealmEndpoint{Realm: topo.Realms[0].Name, Host: host, Port: kdcMapped.Int()}
 	s.ldapHost = host
 	s.ldapPort = ldapMapped.Int()
 	s.ldapsPort = ldapsMapped.Int()
@@ -187,6 +154,7 @@ func StartSambaAD(ctx context.Context) (SambaAD, func(), error) {
 
 func (s *sambaAD) provision(ctx context.Context) error {
 	c := s.container
+	realm := s.topology.Realms[0]
 
 	// Samba ships a default smb.conf that interferes with provisioning;
 	// remove it so samba-tool can write its own from scratch.
@@ -194,11 +162,11 @@ func (s *sambaAD) provision(ctx context.Context) error {
 		return fmt.Errorf("remove default smb.conf: %w", err)
 	}
 
-	netbios := netbiosName(s.topology.Realm)
+	netbios := netbiosName(realm.Name)
 	provisionCmd := []string{
 		"samba-tool", "domain", "provision",
 		"--use-rfc2307",
-		"--realm=" + s.topology.Realm,
+		"--realm=" + realm.Name,
 		"--domain=" + netbios,
 		"--host-name=" + sambaDCHostname,
 		"--adminpass=" + sambaAdminPassword,
@@ -219,26 +187,28 @@ func (s *sambaAD) provision(ctx context.Context) error {
 		return fmt.Errorf("samba-tool domain provision: %w", err)
 	}
 
-	for _, u := range s.topology.Users {
+	for _, u := range realm.Users {
 		if err := execIn(ctx, c, []string{"samba-tool", "user", "create", u.Name, u.Password}); err != nil {
 			return fmt.Errorf("samba-tool user create %s: %w", u.Name, err)
 		}
-	}
-
-	for _, svc := range s.topology.Services {
-		if err := execIn(ctx, c, []string{"samba-tool", "user", "create", svc.AccountName, svc.Password}); err != nil {
-			return fmt.Errorf("samba-tool user create %s: %w", svc.AccountName, err)
-		}
-		if err := execIn(ctx, c, []string{"samba-tool", "spn", "add", svc.SPN, svc.AccountName}); err != nil {
-			return fmt.Errorf("samba-tool spn add %s -> %s: %w", svc.SPN, svc.AccountName, err)
-		}
-		if err := s.exportKeytab(ctx, svc.SPN); err != nil {
-			return err
+		if u.WithKeytab {
+			if err := s.exportKeytab(ctx, u.Name, realm.Name); err != nil {
+				return err
+			}
 		}
 	}
 
-	for _, principal := range s.topology.Keytabs {
-		if err := s.exportKeytab(ctx, principal); err != nil {
+	for _, svc := range realm.Services {
+		if svc.Account == nil {
+			return fmt.Errorf("Samba service %q requires Account", svc.SPN)
+		}
+		if err := execIn(ctx, c, []string{"samba-tool", "user", "create", svc.Account.Name, svc.Account.Password}); err != nil {
+			return fmt.Errorf("samba-tool user create %s: %w", svc.Account.Name, err)
+		}
+		if err := execIn(ctx, c, []string{"samba-tool", "spn", "add", svc.SPN, svc.Account.Name}); err != nil {
+			return fmt.Errorf("samba-tool spn add %s -> %s: %w", svc.SPN, svc.Account.Name, err)
+		}
+		if err := s.exportKeytab(ctx, svc.SPN, realm.Name); err != nil {
 			return err
 		}
 	}
@@ -246,11 +216,9 @@ func (s *sambaAD) provision(ctx context.Context) error {
 	return nil
 }
 
-// exportKeytab runs samba-tool exportkeytab inside the container,
-// copies the resulting file out, stores the bytes in s.keytabs
-// keyed by principal, and logs a klist-style summary of what was
-// written.
-func (s *sambaAD) exportKeytab(ctx context.Context, principal string) error {
+// exportKeytab runs samba-tool exportkeytab for principal, copies
+// the file out, and stores it under "principal@realm".
+func (s *sambaAD) exportKeytab(ctx context.Context, principal, realm string) error {
 	c := s.container
 	path := "/tmp/" + strings.ReplaceAll(principal, "/", "_") + ".keytab"
 	if err := execIn(ctx, c, []string{
@@ -268,8 +236,9 @@ func (s *sambaAD) exportKeytab(ctx context.Context, principal string) error {
 	if err != nil {
 		return fmt.Errorf("read keytab for %s: %w", principal, err)
 	}
-	s.keytabs[principal] = data
-	logKeytabSummary(principal, data)
+	key := principal + "@" + realm
+	s.keytabs[key] = data
+	logKeytabSummary(key, data)
 	return nil
 }
 
@@ -284,8 +253,8 @@ func waitForSambaKDC(ctx context.Context, s *sambaAD) error {
 	}
 	const maxAttempts = 100 // samba startup is slower than MIT
 	var lastErr error
-	for i := 0; i < maxAttempts; i++ {
-		if err := probeKDC(cfg, s.topology.Realm); err == nil {
+	for range maxAttempts {
+		if err := probeKDC(cfg, s.Realm()); err == nil {
 			return nil
 		} else {
 			lastErr = err
@@ -296,21 +265,22 @@ func waitForSambaKDC(ctx context.Context, s *sambaAD) error {
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
-	return fmt.Errorf("Samba KDC at %s:%d not ready within %d attempts: %v",
+	return fmt.Errorf("Samba KDC at %s:%d not ready within %d attempts: %w",
 		s.endpoint.Host, s.endpoint.Port, maxAttempts, lastErr)
 }
 
-// waitForSambaLDAPS polls the LDAPS port with full TLS handshakes
-// until one completes. The TCP port may bind before the LDAPS service
-// can complete a handshake; a successful handshake confirms the
-// service is genuinely accepting clients.
+// waitForSambaLDAPS polls with TLS handshakes; the TCP port may
+// bind before LDAPS can complete a handshake.
 func waitForSambaLDAPS(ctx context.Context, s *sambaAD) error {
 	addr := net.JoinHostPort(s.ldapHost, strconv.Itoa(s.ldapsPort))
 	const maxAttempts = 100
 	var lastErr error
-	for i := 0; i < maxAttempts; i++ {
-		d := net.Dialer{Timeout: 500 * time.Millisecond}
-		conn, err := tls.DialWithDialer(&d, "tcp", addr, &tls.Config{InsecureSkipVerify: true})
+	for range maxAttempts {
+		dialer := &tls.Dialer{
+			NetDialer: &net.Dialer{Timeout: 500 * time.Millisecond},
+			Config:    &tls.Config{InsecureSkipVerify: true},
+		}
+		conn, err := dialer.DialContext(ctx, "tcp", addr)
 		if err == nil {
 			_ = conn.Close()
 			return nil
@@ -322,20 +292,20 @@ func waitForSambaLDAPS(ctx context.Context, s *sambaAD) error {
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
-	return fmt.Errorf("Samba LDAPS at %s not ready within %d attempts: %v",
+	return fmt.Errorf("Samba LDAPS at %s not ready within %d attempts: %w",
 		addr, maxAttempts, lastErr)
 }
 
 // netbiosName returns the first label of a realm name, used as the
 // NetBIOS short domain. "AD.GOKRB5" -> "AD".
 func netbiosName(realm string) string {
-	if i := strings.IndexByte(realm, '.'); i >= 0 {
-		return realm[:i]
+	if first, _, ok := strings.Cut(realm, "."); ok {
+		return first
 	}
 	return realm
 }
 
-func (s *sambaAD) Realm() string { return s.topology.Realm }
+func (s *sambaAD) Realm() string { return s.topology.Realms[0].Name }
 
 func (s *sambaAD) Config() (*config.Config, error) {
 	cfg, err := config.NewFromString(GenerateKRB5Conf([]RealmEndpoint{s.endpoint}))
@@ -350,26 +320,20 @@ func (s *sambaAD) NewClient(username, password string) (*client.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return client.NewWithPassword(username, s.topology.Realm, password, cfg), nil
+	return client.NewWithPassword(username, s.Realm(), password, cfg), nil
 }
 
-// Keytab returns the keytab for the given principal. The principal
-// must be one the topology declared in Keytabs.
+// Keytab returns the keytab for principal. principal may be bare
+// ("testuser1") or fully qualified ("testuser1@AD.GOKRB5"); bare
+// names must resolve to exactly one entry.
 func (s *sambaAD) Keytab(principal string) (*keytab.Keytab, error) {
-	data, ok := s.keytabs[principal]
-	if !ok {
-		return nil, fmt.Errorf("no keytab provisioned for %q", principal)
-	}
-	kt := keytab.New()
-	if err := kt.Unmarshal(data); err != nil {
-		return nil, fmt.Errorf("unmarshal keytab for %s: %w", principal, err)
-	}
-	return kt, nil
+	return loadKeytab(s.keytabs, principal)
 }
 
 func (s *sambaAD) LDAPEndpoint() (string, int)  { return s.ldapHost, s.ldapPort }
 func (s *sambaAD) LDAPSEndpoint() (string, int) { return s.ldapHost, s.ldapsPort }
-func (s *sambaAD) LDAPSPN() string              { return "ldap/" + dcHostname(s.topology.Realm) }
+func (s *sambaAD) LDAPSPN() string              { return "ldap/" + dcHostname(s.Realm()) }
+func (s *sambaAD) HTTPSPN() string              { return sambaHTTPSPN }
 
 // dcHostname returns the DC's FQDN as Samba registers it during
 // provisioning: <sambaDCHostname>.<lowercased realm>.
@@ -384,5 +348,5 @@ func (s *sambaAD) Close(ctx context.Context) error {
 	return s.container.Terminate(ctx)
 }
 
-// Compile-time check that sambaAD satisfies SambaAD (and thus KDC).
-var _ SambaAD = (*sambaAD)(nil)
+// Compile-time check that sambaAD satisfies ActiveDirectory (and thus KDC).
+var _ ActiveDirectory = (*sambaAD)(nil)

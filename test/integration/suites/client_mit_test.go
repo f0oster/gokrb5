@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
+	"net/http"
 	"slices"
 	"strings"
 	"sync"
@@ -13,22 +15,22 @@ import (
 	"github.com/f0oster/gokrb5/iana/errorcode"
 	"github.com/f0oster/gokrb5/iana/etypeID"
 	"github.com/f0oster/gokrb5/krberror"
+	"github.com/f0oster/gokrb5/spnego"
 	"github.com/f0oster/gokrb5/test"
 	"github.com/f0oster/gokrb5/test/integration/framework"
 )
 
-// requireMIT lazily starts the MIT KDC fixture on first call and
-// returns the shared handle. Skips the test if integration is
-// disabled or the fixture failed to start.
+// requireMIT lazily starts the MIT KDC fixture on first call.
 var (
 	mitOnce sync.Once
-	mitKDC  framework.KDC
+	mitKDC  *framework.MITKDC
 	mitErr  error
 )
 
-func requireMIT(t *testing.T) framework.KDC {
+func requireMIT(t *testing.T) *framework.MITKDC {
 	t.Helper()
 	test.Integration(t)
+	framework.SkipIfNoDocker(t)
 	mitOnce.Do(func() {
 		kdc, cleanup, err := framework.StartMITKDC(context.Background())
 		if err != nil {
@@ -45,11 +47,9 @@ func requireMIT(t *testing.T) framework.KDC {
 }
 
 // requireKrbError asserts the error is a krberror.Krberror with the
-// given RootCause and an EText that contains the given substring.
-// gokrb5's krberror package concatenates wrapped error text via fmt
-// rather than preserving the underlying error in an Unwrap chain, so
-// substring matching is the most precise structural check available
-// for the underlying KDC error code or decryption failure cause.
+// given RootCause and an error text containing wantSubstr. The
+// krberror package doesn't expose the inner error via Unwrap, so
+// substring matching is the closest structural check.
 func requireKrbError(t *testing.T, err error, wantRootCause, wantSubstr string) {
 	t.Helper()
 	if err == nil {
@@ -68,11 +68,8 @@ func requireKrbError(t *testing.T, err error, wantRootCause, wantSubstr string) 
 	}
 }
 
-// TestClient_Login_PreauthUser_MIT exercises the AS exchange happy path
-// against a principal that requires pre-authentication. The first
-// AS-REQ has no preauth, the KDC responds with KDC_ERR_PREAUTH_REQUIRED,
-// the client retries with PA-ENC-TIMESTAMP encrypted under the correct
-// key, and the KDC returns an AS-REP carrying a TGT.
+// TestClient_Login_PreauthUser_MIT exercises the AS exchange against
+// a principal that requires PA-ENC-TIMESTAMP pre-authentication.
 func TestClient_Login_PreauthUser_MIT(t *testing.T) {
 	kdc := requireMIT(t)
 
@@ -87,11 +84,8 @@ func TestClient_Login_PreauthUser_MIT(t *testing.T) {
 	}
 }
 
-// TestClient_Login_NoPreauthUser_MIT exercises the AS exchange happy
-// path against a principal that does not require pre-authentication.
-// The KDC issues an AS-REP on the first AS-REQ with no preauth round
-// trip, and the client decrypts EncASRepPart with the user's long-term
-// key.
+// TestClient_Login_NoPreauthUser_MIT exercises the AS exchange
+// against a principal that does not require pre-authentication.
 func TestClient_Login_NoPreauthUser_MIT(t *testing.T) {
 	kdc := requireMIT(t)
 
@@ -106,11 +100,9 @@ func TestClient_Login_NoPreauthUser_MIT(t *testing.T) {
 	}
 }
 
-// TestClient_Login_InvalidPassword_PreauthUser_MIT verifies that an
-// AS exchange with a wrong password against a preauth-required
-// principal is rejected at the KDC with KDC_ERR_PREAUTH_FAILED. The
-// client retries with PA-ENC-TIMESTAMP encrypted under the wrong key;
-// the KDC fails to decrypt that and rejects the request.
+// TestClient_Login_InvalidPassword_PreauthUser_MIT verifies a wrong
+// password against a preauth-required principal is rejected at the
+// KDC with KDC_ERR_PREAUTH_FAILED.
 func TestClient_Login_InvalidPassword_PreauthUser_MIT(t *testing.T) {
 	kdc := requireMIT(t)
 
@@ -125,12 +117,9 @@ func TestClient_Login_InvalidPassword_PreauthUser_MIT(t *testing.T) {
 		errorcode.Lookup(errorcode.KDC_ERR_PREAUTH_FAILED))
 }
 
-// TestClient_Login_InvalidPassword_NoPreauthUser_MIT verifies that an
-// AS exchange with a wrong password against a non-preauth principal
-// fails at client-side decryption rather than at the KDC. The KDC
-// happily issues an AS-REP because no preauth was requested; the
-// client then fails to decrypt EncASRepPart because the key derived
-// from the wrong password produces an integrity verification failure.
+// TestClient_Login_InvalidPassword_NoPreauthUser_MIT verifies a
+// wrong password against a non-preauth principal fails at client-side
+// decryption (no KDC rejection because no preauth was requested).
 func TestClient_Login_InvalidPassword_NoPreauthUser_MIT(t *testing.T) {
 	kdc := requireMIT(t)
 
@@ -145,10 +134,8 @@ func TestClient_Login_InvalidPassword_NoPreauthUser_MIT(t *testing.T) {
 		"integrity verification failed")
 }
 
-// TestClient_Login_UnknownUser_MIT verifies that an AS exchange for a
-// principal that does not exist in the KDC database fails with
-// KDC_ERR_C_PRINCIPAL_UNKNOWN. The KDC returns this immediately on the
-// first AS-REQ; no preauth round trip is involved.
+// TestClient_Login_UnknownUser_MIT verifies an unknown principal is
+// rejected with KDC_ERR_C_PRINCIPAL_UNKNOWN.
 func TestClient_Login_UnknownUser_MIT(t *testing.T) {
 	kdc := requireMIT(t)
 
@@ -164,9 +151,7 @@ func TestClient_Login_UnknownUser_MIT(t *testing.T) {
 }
 
 // TestClient_Login_PreauthUser_Keytab_MIT exercises the AS exchange
-// happy path using a keytab instead of a password. The PA-ENC-TIMESTAMP
-// is encrypted under the key extracted from the keytab; the KDC accepts
-// it and returns an AS-REP carrying a TGT.
+// using a keytab instead of a password.
 func TestClient_Login_PreauthUser_Keytab_MIT(t *testing.T) {
 	kdc := requireMIT(t)
 
@@ -188,10 +173,8 @@ func TestClient_Login_PreauthUser_Keytab_MIT(t *testing.T) {
 	}
 }
 
-// TestClient_Login_NoPreauthUser_Keytab_MIT exercises keytab-based AS
-// exchange against a principal that does not require pre-authentication.
-// The KDC issues an AS-REP on the first AS-REQ; the client decrypts
-// EncASRepPart with the long-term key recovered from the keytab.
+// TestClient_Login_NoPreauthUser_Keytab_MIT exercises a keytab-based
+// AS exchange against a non-preauth principal.
 func TestClient_Login_NoPreauthUser_Keytab_MIT(t *testing.T) {
 	kdc := requireMIT(t)
 
@@ -213,10 +196,8 @@ func TestClient_Login_NoPreauthUser_Keytab_MIT(t *testing.T) {
 	}
 }
 
-// loggedInClient builds a client for the given user, performs the AS
-// exchange to obtain a TGT, and returns the ready-to-use client.
-// Failures during construction or login are fatal: the test wanted a
-// logged-in client and got nothing usable.
+// loggedInClient builds a client and performs the AS exchange. Fails
+// the test on any error.
 func loggedInClient(t *testing.T, kdc framework.KDC, username, password string) *client.Client {
 	t.Helper()
 	cl, err := kdc.NewClient(username, password)
@@ -230,11 +211,8 @@ func loggedInClient(t *testing.T, kdc framework.KDC, username, password string) 
 	return cl
 }
 
-// TestClient_GetServiceTicket_MIT exercises the TGS exchange happy
-// path. The client logs in, then requests a service ticket for the
-// HTTP service principal. The KDC returns a TGS-REP carrying a ticket
-// encrypted with the service's long-term key plus a fresh session key
-// shared between the client and the service.
+// TestClient_GetServiceTicket_MIT exercises a TGS exchange for a
+// service in the home realm.
 func TestClient_GetServiceTicket_MIT(t *testing.T) {
 	kdc := requireMIT(t)
 
@@ -263,10 +241,8 @@ func TestClient_GetServiceTicket_MIT(t *testing.T) {
 	}
 }
 
-// TestClient_GetServiceTicket_UnknownSPN_MIT verifies that a TGS
-// request for a service principal that does not exist in the KDC's
-// database is rejected with KDC_ERR_S_PRINCIPAL_UNKNOWN. The TGT is
-// valid; only the requested service is unknown.
+// TestClient_GetServiceTicket_UnknownSPN_MIT verifies a TGS request
+// for an unknown SPN is rejected with KDC_ERR_S_PRINCIPAL_UNKNOWN.
 func TestClient_GetServiceTicket_UnknownSPN_MIT(t *testing.T) {
 	kdc := requireMIT(t)
 
@@ -280,11 +256,8 @@ func TestClient_GetServiceTicket_UnknownSPN_MIT(t *testing.T) {
 }
 
 // TestClient_GetServiceTicket_Cached_MIT verifies the client caches
-// service tickets: a second call for the same SPN returns the same
-// ticket bytes without going back to the KDC. The shape of this test
-// is byte-equality on the encrypted ticket cipher; if the client had
-// re-requested, the KDC would issue a fresh ticket with a different
-// random session key and different EncPart bytes.
+// service tickets. Tested via byte-equality on the ticket cipher; a
+// re-fetch from the KDC would produce a different cipher.
 func TestClient_GetServiceTicket_Cached_MIT(t *testing.T) {
 	kdc := requireMIT(t)
 
@@ -360,14 +333,9 @@ func TestClient_NoReachableKDC_MIT(t *testing.T) {
 	requireKrbError(t, cl.Login(), krberror.NetworkingError, "")
 }
 
-// TestClient_GetServiceTicket_CrossRealm_MIT exercises the cross-realm
-// TGS flow. The user authenticates to its home realm (HOME.GOKRB5) and
-// then requests a service ticket for a principal in the trusted realm
-// (TRUSTED.GOKRB5). The client transparently fetches a cross-realm TGT
-// for TRUSTED.GOKRB5 from HOME.GOKRB5's KDC (using the
-// krbtgt/TRUSTED.GOKRB5@HOME.GOKRB5 trust principal) and presents that
-// to TRUSTED.GOKRB5's KDC to get the service ticket. The returned ticket
-// should be in the trusted realm with the requested SName.
+// TestClient_GetServiceTicket_CrossRealm_MIT exercises the
+// cross-realm TGS flow: a HOME user requests a TRUSTED service and
+// the client traverses the trust to obtain the ticket.
 func TestClient_GetServiceTicket_CrossRealm_MIT(t *testing.T) {
 	kdc := requireMIT(t)
 
@@ -450,18 +418,90 @@ func TestClient_Login_Concurrent_MIT(t *testing.T) {
 	const n = 8
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range n {
+		wg.Go(func() {
 			if err := cl.Login(); err != nil {
 				errs <- err
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)
 	for err := range errs {
 		t.Errorf("concurrent login: %v", err)
+	}
+}
+
+var (
+	mitHTTPOnce     sync.Once
+	mitHTTPAcceptor framework.HTTPAcceptor
+	mitHTTPErr      error
+)
+
+// requireMITHTTPAcceptor lazily starts an HTTP acceptor keyed for
+// the MIT HTTP SPN.
+func requireMITHTTPAcceptor(t *testing.T) framework.HTTPAcceptor {
+	t.Helper()
+	kdc := requireMIT(t)
+	mitHTTPOnce.Do(func() {
+		a, cleanup, err := framework.StartHTTPAcceptor(context.Background(), kdc, kdc.HTTPSPN())
+		if err != nil {
+			mitHTTPErr = err
+			return
+		}
+		mitHTTPAcceptor = a
+		registerFixtureCleanup(cleanup)
+	})
+	if mitHTTPAcceptor == nil {
+		t.Skipf("krbhttp acceptor (MIT) not available: %v", mitHTTPErr)
+	}
+	return mitHTTPAcceptor
+}
+
+// TestSPNEGO_HTTP_MIT runs an end-to-end SPNEGO HTTP exchange with
+// an MIT-issued service ticket.
+func TestSPNEGO_HTTP_MIT(t *testing.T) {
+	kdc := requireMIT(t)
+	acceptor := requireMITHTTPAcceptor(t)
+	t.Cleanup(func() { dumpAcceptorLogsOnFailure(t, acceptor) })
+
+	cl, err := kdc.NewClient("nopreauth_user", framework.MITUserPassword)
+	if err != nil {
+		t.Fatalf("build client: %v", err)
+	}
+	defer cl.Destroy()
+	if err := cl.Login(); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+
+	spc := spnego.NewClient(cl, nil, acceptor.SPN())
+	resp, err := spc.Get(acceptor.BaseURL() + "/spnego/")
+	if err != nil {
+		t.Fatalf("authenticated GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestSPNEGO_HTTP_NoAuth_Refused_MIT verifies the acceptor refuses an
+// unauthenticated request with 401 Negotiate.
+func TestSPNEGO_HTTP_NoAuth_Refused_MIT(t *testing.T) {
+	acceptor := requireMITHTTPAcceptor(t)
+
+	resp, err := http.Get(acceptor.BaseURL() + "/spnego/")
+	if err != nil {
+		t.Fatalf("plain GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+	if got, want := resp.Header.Get("WWW-Authenticate"), "Negotiate"; got != want {
+		t.Errorf("WWW-Authenticate = %q, want %q", got, want)
 	}
 }

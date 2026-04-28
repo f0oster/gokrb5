@@ -5,74 +5,105 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"strings"
 
+	"github.com/f0oster/gokrb5/iana/etypeID"
 	"github.com/f0oster/gokrb5/keytab"
 	"github.com/testcontainers/testcontainers-go"
 	tcexec "github.com/testcontainers/testcontainers-go/exec"
 )
 
-// logFixtureVersions logs the OS pretty name and dpkg-reported
-// versions of the named packages from inside c, prefixed with label.
-// Best-effort; failures are logged but don't abort.
+// fixtureLog emits framework-side diagnostic lines with a distinct
+// prefix so they're easy to pick out from go test and testcontainers
+// output.
+var fixtureLog = log.New(os.Stderr, "[fixture] ", 0)
+
+// logFixtureVersions logs OS and package versions from c.
 func logFixtureVersions(ctx context.Context, c testcontainers.Container, label string, packages ...string) {
+	// Build a single shell pipeline that emits "os=<value>" followed
+	// by "<pkg>=<version>" for each package. dpkg-query's stderr is
+	// silenced so a missing package doesn't pollute the log.
 	parts := []string{`. /etc/os-release && echo "os=$PRETTY_NAME"`}
 	for _, pkg := range packages {
 		parts = append(parts, fmt.Sprintf(`dpkg-query -W -f='%s=${Version}\n' %s 2>/dev/null`, pkg, pkg))
 	}
 	cmd := strings.Join(parts, "; ")
+
 	_, reader, err := c.Exec(ctx, []string{"sh", "-c", cmd}, tcexec.Multiplexed())
 	if err != nil {
-		log.Printf("%s: version probe failed: %v", label, err)
+		fixtureLog.Printf("%s: version probe failed: %v", label, err)
 		return
 	}
 	out, _ := io.ReadAll(reader)
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+
+	// Log each pipeline line with the fixture's label prefix.
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		if line != "" {
-			log.Printf("%s: %s", label, line)
+			fixtureLog.Printf("%s: %s", label, line)
 		}
 	}
 }
 
-// logKeytabSummary parses keytab bytes and logs a klist-like summary
-// of every entry: principal name, kvno, and enctype id. Key material
-// is not logged. Failures are swallowed; this is a diagnostic, not
-// a correctness check.
+// logKeytabSummary logs principal, kvno, and enctype for each entry
+// in the keytab. Key material is not logged.
 func logKeytabSummary(label string, data []byte) {
 	kt := keytab.New()
 	if err := kt.Unmarshal(data); err != nil {
-		log.Printf("keytab[%s]: unmarshal failed: %v", label, err)
+		fixtureLog.Printf("keytab[%s]: unmarshal failed: %v", label, err)
 		return
 	}
 	if len(kt.Entries) == 0 {
-		log.Printf("keytab[%s]: no entries", label)
+		fixtureLog.Printf("keytab[%s]: no entries", label)
 		return
 	}
 	for _, e := range kt.Entries {
-		log.Printf("keytab[%s]: kvno=%d etype=%d principal=%s",
-			label, e.KVNO, e.Key.KeyType, e.Principal)
+		fixtureLog.Printf("keytab[%s]: kvno=%d etype=%d (%s) principal=%s",
+			label, e.KVNO, e.Key.KeyType, etypeName(e.Key.KeyType), e.Principal)
 	}
 }
 
-// dumpContainerLogs reads the container's stdout/stderr and logs each
-// non-empty line prefixed with label. Best-effort; surfaces a
-// Docker-level error so a startup failure can be diagnosed without
-// re-running with shell access to the container.
+// etypeName returns the canonical name for a Kerberos etype id, or
+// "etype-N" if not recognised.
+func etypeName(etype int32) string {
+	switch etype {
+	case etypeID.DES_CBC_CRC:
+		return "des-cbc-crc"
+	case etypeID.DES_CBC_MD5:
+		return "des-cbc-md5"
+	case etypeID.DES3_CBC_SHA1_KD:
+		return "des3-cbc-sha1-kd"
+	case etypeID.AES128_CTS_HMAC_SHA1_96:
+		return "aes128-cts-hmac-sha1-96"
+	case etypeID.AES256_CTS_HMAC_SHA1_96:
+		return "aes256-cts-hmac-sha1-96"
+	case etypeID.AES128_CTS_HMAC_SHA256_128:
+		return "aes128-cts-hmac-sha256-128"
+	case etypeID.AES256_CTS_HMAC_SHA384_192:
+		return "aes256-cts-hmac-sha384-192"
+	case etypeID.RC4_HMAC:
+		return "rc4-hmac"
+	}
+	return fmt.Sprintf("etype-%d", etype)
+}
+
+// dumpContainerLogs logs the container's stdout/stderr line-by-line
+// with the given label.
 func dumpContainerLogs(ctx context.Context, c testcontainers.Container, label string) {
 	rc, err := c.Logs(ctx)
 	if err != nil {
-		log.Printf("%s: read container logs: %v", label, err)
+		fixtureLog.Printf("%s: read container logs: %v", label, err)
 		return
 	}
 	defer rc.Close()
 	out, err := io.ReadAll(rc)
 	if err != nil {
-		log.Printf("%s: drain container logs: %v", label, err)
+		fixtureLog.Printf("%s: drain container logs: %v", label, err)
 		return
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		if line != "" {
-			log.Printf("%s [container]: %s", label, line)
+			fixtureLog.Printf("%s [container]: %s", label, line)
 		}
 	}
 }

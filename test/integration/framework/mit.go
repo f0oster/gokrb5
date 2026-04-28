@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -13,9 +12,7 @@ import (
 	"github.com/f0oster/gokrb5/client"
 	"github.com/f0oster/gokrb5/config"
 	"github.com/f0oster/gokrb5/keytab"
-	"github.com/f0oster/gokrb5/krberror"
 	"github.com/testcontainers/testcontainers-go"
-	tcexec "github.com/testcontainers/testcontainers-go/exec"
 )
 
 const (
@@ -26,59 +23,23 @@ const (
 
 	mitMasterPassword = "masterpw"
 
-	// MITUserPassword is the password the framework sets on every
-	// provisioned user principal. Tests use this when constructing
-	// clients via KDC.NewClient.
+	// MITUserPassword is the password set on every provisioned user.
 	MITUserPassword = "Password1!"
 
 	// readyFile gates the container's CMD: krb5kdc starts only once
 	// this file exists.
 	readyFile = "/var/run/kdc-ready"
 
-	// trustEnctypes pins the cross-realm krbtgt to AES enctypes both
-	// KDCs support.
+	// trustEnctypes pins the cross-realm krbtgt to AES enctypes.
 	trustEnctypes = "aes256-cts-hmac-sha1-96:normal,aes128-cts-hmac-sha1-96:normal,aes256-cts-hmac-sha384-192:normal,aes128-cts-hmac-sha256-128:normal"
 
-	// MITHTTPSPN is the SPN of the HTTP service the MIT topology
-	// provisions in HOME.GOKRB5. Tests pass this to
-	// framework.StartHTTPAcceptor.
-	MITHTTPSPN = "HTTP/host.home.gokrb5"
+	mitHTTPSPN = "HTTP/host.home.gokrb5"
 )
-
-// MITTopology declares the realms, principals, and trusts to
-// provision into an MIT fixture.
-type MITTopology struct {
-	Realms []RealmSpec
-	Trusts []TrustSpec
-}
-
-// RealmSpec is the per-realm provisioning data.
-type RealmSpec struct {
-	Name     string
-	Users    []UserSpec
-	Services []string // SPN strings, e.g. "HTTP/host.example.com" (no @REALM; the realm is implicit)
-}
-
-// UserSpec describes a user principal to provision.
-type UserSpec struct {
-	Name            string
-	Password        string
-	RequiresPreauth bool
-	WithKeytab      bool
-}
-
-// TrustSpec is a one-way cross-realm trust. Users in From can request
-// service tickets for principals in To. The framework provisions the
-// shared krbtgt/To@From principal in both realms with matching keys.
-type TrustSpec struct {
-	From string
-	To   string
-}
 
 // multiRealmTopology declares two realms (HOME, TRUSTED) joined by a
 // one-way trust HOME -> TRUSTED. HOME holds the test users plus a
 // service; TRUSTED holds a service that HOME users reach via the trust.
-var multiRealmTopology = MITTopology{
+var multiRealmTopology = Topology{
 	Realms: []RealmSpec{
 		{
 			Name: "HOME.GOKRB5",
@@ -86,11 +47,11 @@ var multiRealmTopology = MITTopology{
 				{Name: "preauth_user", Password: MITUserPassword, RequiresPreauth: true, WithKeytab: true},
 				{Name: "nopreauth_user", Password: MITUserPassword, RequiresPreauth: false, WithKeytab: true},
 			},
-			Services: []string{"HTTP/host.home.gokrb5"},
+			Services: []ServiceSpec{{SPN: mitHTTPSPN}},
 		},
 		{
 			Name:     "TRUSTED.GOKRB5",
-			Services: []string{"HTTP/host.trusted.gokrb5"},
+			Services: []ServiceSpec{{SPN: "HTTP/host.trusted.gokrb5"}},
 		},
 	},
 	Trusts: []TrustSpec{
@@ -105,22 +66,21 @@ type realmHandle struct {
 	Endpoint  RealmEndpoint
 }
 
-type mitKDC struct {
-	topology MITTopology
+// MITKDC is a containerised MIT Kerberos KDC fixture.
+type MITKDC struct {
+	topology Topology
 	realms   []realmHandle
-	// keytabs is keyed by bare principal name (e.g. "preauth_user",
-	// "HTTP/host.home.gokrb5"). Names must be unique across realms;
-	// otherwise later provisioning silently overwrites earlier entries.
+	// keytabs is keyed by full principal name including realm
+	// (e.g. "preauth_user@HOME.GOKRB5").
 	keytabs map[string][]byte
 }
 
-// StartMITKDC starts one container per realm in the test topology
-// and provisions realms, principals, and the trusts between them.
-// Returns the KDC handle and a cleanup function that terminates
-// every container.
-func StartMITKDC(ctx context.Context) (KDC, func(), error) {
+// StartMITKDC starts one container per realm in the topology and
+// provisions realms, principals, and trusts. Returns the handle and
+// a cleanup function.
+func StartMITKDC(ctx context.Context) (*MITKDC, func(), error) {
 	topo := multiRealmTopology
-	kdc := &mitKDC{
+	kdc := &MITKDC{
 		topology: topo,
 		realms:   make([]realmHandle, 0, len(topo.Realms)),
 		keytabs:  make(map[string][]byte),
@@ -220,7 +180,7 @@ func startContainer(ctx context.Context, realm string) (testcontainers.Container
 	return c, RealmEndpoint{Realm: realm, Host: host, Port: mapped.Int()}, nil
 }
 
-func (k *mitKDC) provisionRealm(ctx context.Context, h *realmHandle) error {
+func (k *MITKDC) provisionRealm(ctx context.Context, h *realmHandle) error {
 	c := h.Container
 	realm := h.Spec.Name
 
@@ -240,6 +200,10 @@ func (k *mitKDC) provisionRealm(ctx context.Context, h *realmHandle) error {
 		return fmt.Errorf("kdb5_util create: %w", err)
 	}
 
+	if err := execIn(ctx, c, []string{"mkdir", "-p", "/etc/krb5/keytabs"}); err != nil {
+		return fmt.Errorf("create keytab dir: %w", err)
+	}
+
 	for _, u := range h.Spec.Users {
 		preauth := "+requires_preauth"
 		if !u.RequiresPreauth {
@@ -250,26 +214,28 @@ func (k *mitKDC) provisionRealm(ctx context.Context, h *realmHandle) error {
 			return fmt.Errorf("addprinc %s: %w", u.Name, err)
 		}
 		if u.WithKeytab {
+			principal := fmt.Sprintf("%s@%s", u.Name, realm)
 			path := fmt.Sprintf("/etc/krb5/keytabs/%s.keytab", u.Name)
-			kt, err := extractKeytab(ctx, c, fmt.Sprintf("%s@%s", u.Name, realm), path, true)
+			kt, err := extractKeytab(ctx, c, principal, path, true)
 			if err != nil {
 				return fmt.Errorf("ktadd %s: %w", u.Name, err)
 			}
-			k.keytabs[u.Name] = kt
+			k.keytabs[principal] = kt
 		}
 	}
 
-	for _, spn := range h.Spec.Services {
-		query := fmt.Sprintf("addprinc -randkey %s@%s", spn, realm)
+	for _, svc := range h.Spec.Services {
+		query := fmt.Sprintf("addprinc -randkey %s@%s", svc.SPN, realm)
 		if err := kadminLocal(ctx, c, query); err != nil {
-			return fmt.Errorf("addprinc %s: %w", spn, err)
+			return fmt.Errorf("addprinc %s: %w", svc.SPN, err)
 		}
-		path := fmt.Sprintf("/etc/krb5/keytabs/%s.keytab", keytabBasename(spn))
-		kt, err := extractKeytab(ctx, c, fmt.Sprintf("%s@%s", spn, realm), path, false)
+		principal := fmt.Sprintf("%s@%s", svc.SPN, realm)
+		path := fmt.Sprintf("/etc/krb5/keytabs/%s.keytab", strings.ReplaceAll(svc.SPN, "/", "_"))
+		kt, err := extractKeytab(ctx, c, principal, path, false)
 		if err != nil {
-			return fmt.Errorf("ktadd %s: %w", spn, err)
+			return fmt.Errorf("ktadd %s: %w", svc.SPN, err)
 		}
-		k.keytabs[spn] = kt
+		k.keytabs[principal] = kt
 	}
 
 	return nil
@@ -301,7 +267,7 @@ func waitForPort(ctx context.Context, h realmHandle) error {
 	}
 	const maxAttempts = 50
 	var lastErr error
-	for i := 0; i < maxAttempts; i++ {
+	for range maxAttempts {
 		if err := probeKDC(cfg, h.Spec.Name); err == nil {
 			return nil
 		} else {
@@ -313,28 +279,8 @@ func waitForPort(ctx context.Context, h realmHandle) error {
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	return fmt.Errorf("KDC at %s:%d not ready within %d attempts: %v",
+	return fmt.Errorf("KDC at %s:%d not ready within %d attempts: %w",
 		h.Endpoint.Host, h.Endpoint.Port, maxAttempts, lastErr)
-}
-
-// probeKDC sends a real AS-REQ for an unknown principal. A KDCError
-// response (e.g. KDC_ERR_C_PRINCIPAL_UNKNOWN) means the round-trip
-// path is live; a Networking_Error means the path isn't ready yet.
-// krb5kdc silently drops malformed TCP messages, so a byte-level
-// probe wouldn't distinguish "KDC not ready" from "KDC ignored
-// garbage" — only a well-formed Kerberos exchange does.
-func probeKDC(cfg *config.Config, realm string) error {
-	cl := client.NewWithPassword("__probe__", realm, "x", cfg)
-	defer cl.Destroy()
-	err := cl.Login()
-	if err == nil {
-		return nil
-	}
-	var ke krberror.Krberror
-	if errors.As(err, &ke) && ke.RootCause == krberror.KDCError {
-		return nil
-	}
-	return err
 }
 
 // kadminLocal runs a kadmin.local query inside c.
@@ -342,27 +288,10 @@ func kadminLocal(ctx context.Context, c testcontainers.Container, query string) 
 	return execIn(ctx, c, []string{"kadmin.local", "-q", query})
 }
 
-// execIn runs cmd inside c. Returns an error if the process exits
-// non-zero, including the captured output.
-func execIn(ctx context.Context, c testcontainers.Container, cmd []string) error {
-	exitCode, reader, err := c.Exec(ctx, cmd, tcexec.Multiplexed())
-	if err != nil {
-		return fmt.Errorf("exec %v: %w", cmd, err)
-	}
-	if exitCode != 0 {
-		out, _ := io.ReadAll(reader)
-		return fmt.Errorf("%v exited %d: %s", cmd, exitCode, string(out))
-	}
-	return nil
-}
-
-// extractKeytab returns the keytab bytes for the given principal.
-// norandkey preserves the principal's stored key; otherwise ktadd
-// rotates it before export.
+// extractKeytab returns the keytab bytes for principal. norandkey
+// preserves the existing key; otherwise ktadd rotates it. The
+// directory containing path must exist.
 func extractKeytab(ctx context.Context, c testcontainers.Container, principal, path string, norandkey bool) ([]byte, error) {
-	if err := execIn(ctx, c, []string{"mkdir", "-p", "/etc/krb5/keytabs"}); err != nil {
-		return nil, err
-	}
 	q := fmt.Sprintf("ktadd -k %s %s", path, principal)
 	if norandkey {
 		q = fmt.Sprintf("ktadd -norandkey -k %s %s", path, principal)
@@ -381,12 +310,6 @@ func extractKeytab(ctx context.Context, c testcontainers.Container, principal, p
 	}
 	logKeytabSummary(principal, data)
 	return data, nil
-}
-
-// keytabBasename turns an SPN into a filename-safe form by replacing
-// slashes with underscores.
-func keytabBasename(spn string) string {
-	return strings.ReplaceAll(spn, "/", "_")
 }
 
 func randomTrustPassword() (string, error) {
@@ -437,7 +360,7 @@ func renderKadm5ACL(realm string) string {
 	return fmt.Sprintf("*/admin@%s    *\n", realm)
 }
 
-func (k *mitKDC) containerFor(realm string) (testcontainers.Container, bool) {
+func (k *MITKDC) containerFor(realm string) (testcontainers.Container, bool) {
 	for _, h := range k.realms {
 		if h.Spec.Name == realm {
 			return h.Container, true
@@ -446,11 +369,11 @@ func (k *mitKDC) containerFor(realm string) (testcontainers.Container, bool) {
 	return nil, false
 }
 
-func (k *mitKDC) Realm() string {
+func (k *MITKDC) Realm() string {
 	return k.topology.Realms[0].Name
 }
 
-func (k *mitKDC) Config() (*config.Config, error) {
+func (k *MITKDC) Config() (*config.Config, error) {
 	endpoints := make([]RealmEndpoint, len(k.realms))
 	for i, h := range k.realms {
 		endpoints[i] = h.Endpoint
@@ -462,7 +385,7 @@ func (k *mitKDC) Config() (*config.Config, error) {
 	return cfg, nil
 }
 
-func (k *mitKDC) NewClient(username, password string) (*client.Client, error) {
+func (k *MITKDC) NewClient(username, password string) (*client.Client, error) {
 	cfg, err := k.Config()
 	if err != nil {
 		return nil, err
@@ -470,21 +393,17 @@ func (k *mitKDC) NewClient(username, password string) (*client.Client, error) {
 	return client.NewWithPassword(username, k.Realm(), password, cfg), nil
 }
 
-// Keytab returns the keytab for the given principal. Keytabs are
-// extracted during provisioning and held in memory.
-func (k *mitKDC) Keytab(principal string) (*keytab.Keytab, error) {
-	data, ok := k.keytabs[principal]
-	if !ok {
-		return nil, fmt.Errorf("no keytab provisioned for %q", principal)
-	}
-	kt := keytab.New()
-	if err := kt.Unmarshal(data); err != nil {
-		return nil, fmt.Errorf("unmarshal keytab for %s: %w", principal, err)
-	}
-	return kt, nil
+// Keytab returns the keytab for principal. principal may be bare
+// ("preauth_user") or fully qualified ("preauth_user@HOME.GOKRB5");
+// bare names must resolve to exactly one entry.
+func (k *MITKDC) Keytab(principal string) (*keytab.Keytab, error) {
+	return loadKeytab(k.keytabs, principal)
 }
 
-func (k *mitKDC) Close(ctx context.Context) error {
+// HTTPSPN returns the SPN of the HTTP service in the home realm.
+func (k *MITKDC) HTTPSPN() string { return mitHTTPSPN }
+
+func (k *MITKDC) Close(ctx context.Context) error {
 	var firstErr error
 	for _, h := range k.realms {
 		if h.Container == nil {
@@ -496,3 +415,6 @@ func (k *mitKDC) Close(ctx context.Context) error {
 	}
 	return firstErr
 }
+
+// Compile-time check that *MITKDC satisfies KDC.
+var _ KDC = (*MITKDC)(nil)
