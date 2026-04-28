@@ -45,9 +45,10 @@ const (
 
 // SambaTopology declares what to provision into a Samba AD-DC fixture.
 type SambaTopology struct {
-	Realm   string
-	Users   []SambaUserSpec
-	Keytabs []string // principals to export at provision time
+	Realm    string
+	Users    []SambaUserSpec
+	Services []SambaServiceSpec
+	Keytabs  []string // additional principals to export at provision time
 }
 
 // SambaUserSpec describes an AD user principal.
@@ -55,6 +56,19 @@ type SambaUserSpec struct {
 	Name     string
 	Password string
 }
+
+// SambaServiceSpec describes a service whose SPN is attached to a
+// dedicated AD account. The framework creates the account, registers
+// the SPN, and exports a keytab keyed by the SPN.
+type SambaServiceSpec struct {
+	AccountName string // sAMAccountName for the underlying account
+	SPN         string // service principal, e.g. "HTTP/web.ad.gokrb5"
+	Password    string
+}
+
+// SambaHTTPSPN is the SPN of the HTTP service account the AD topology
+// provisions. Tests pass this to framework.StartHTTPAcceptor.
+const SambaHTTPSPN = "HTTP/web.ad.gokrb5"
 
 // SambaAD is the test-side handle to a containerised Samba AD-DC.
 // Adds LDAP/LDAPS endpoints on top of the KDC interface so SASL/LDAP
@@ -67,12 +81,16 @@ type SambaAD interface {
 }
 
 // adRealmTopology mirrors the test scenarios that suites/client_ad_test.go
-// expects: one realm, two AD users.
+// expects: one realm, two AD users, plus an HTTP service account used
+// by the krbhttp acceptor fixture.
 var adRealmTopology = SambaTopology{
 	Realm: "AD.GOKRB5",
 	Users: []SambaUserSpec{
 		{Name: "testuser1", Password: MITUserPassword},
 		{Name: "testuser2", Password: MITUserPassword},
+	},
+	Services: []SambaServiceSpec{
+		{AccountName: "websvc", SPN: SambaHTTPSPN, Password: MITUserPassword},
 	},
 	Keytabs: []string{"testuser1", "testuser2"},
 }
@@ -190,6 +208,12 @@ func (s *sambaAD) provision(ctx context.Context) error {
 		// Store NT ACLs in user.* xattrs instead of security.*
 		// to avoid needing CAP_SYS_ADMIN in the container.
 		"--option=acl_xattr:security_acl_name = user.NTACL",
+		// Default the domain-wide msDS-SupportedEncryptionTypes to
+		// AES128+AES256 (0x18 = 24). Samba's stock default is 0,
+		// which Windows-compat code treats as RC4-only for accounts
+		// that have the attribute unset, causing the KDC to issue
+		// RC4-HMAC service tickets even when AES keys are present.
+		"--option=kdc default domain supported enctypes = 24",
 	}
 	if err := execIn(ctx, c, provisionCmd); err != nil {
 		return fmt.Errorf("samba-tool domain provision: %w", err)
@@ -201,26 +225,51 @@ func (s *sambaAD) provision(ctx context.Context) error {
 		}
 	}
 
-	for _, principal := range s.topology.Keytabs {
-		path := "/tmp/" + strings.ReplaceAll(principal, "/", "_") + ".keytab"
-		if err := execIn(ctx, c, []string{
-			"samba-tool", "domain", "exportkeytab", path,
-			"--principal=" + principal,
-		}); err != nil {
-			return fmt.Errorf("exportkeytab %s: %w", principal, err)
+	for _, svc := range s.topology.Services {
+		if err := execIn(ctx, c, []string{"samba-tool", "user", "create", svc.AccountName, svc.Password}); err != nil {
+			return fmt.Errorf("samba-tool user create %s: %w", svc.AccountName, err)
 		}
-		rc, err := c.CopyFileFromContainer(ctx, path)
-		if err != nil {
-			return fmt.Errorf("copy keytab for %s: %w", principal, err)
+		if err := execIn(ctx, c, []string{"samba-tool", "spn", "add", svc.SPN, svc.AccountName}); err != nil {
+			return fmt.Errorf("samba-tool spn add %s -> %s: %w", svc.SPN, svc.AccountName, err)
 		}
-		data, readErr := io.ReadAll(rc)
-		_ = rc.Close()
-		if readErr != nil {
-			return fmt.Errorf("read keytab for %s: %w", principal, readErr)
+		if err := s.exportKeytab(ctx, svc.SPN); err != nil {
+			return err
 		}
-		s.keytabs[principal] = data
 	}
 
+	for _, principal := range s.topology.Keytabs {
+		if err := s.exportKeytab(ctx, principal); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// exportKeytab runs samba-tool exportkeytab inside the container,
+// copies the resulting file out, stores the bytes in s.keytabs
+// keyed by principal, and logs a klist-style summary of what was
+// written.
+func (s *sambaAD) exportKeytab(ctx context.Context, principal string) error {
+	c := s.container
+	path := "/tmp/" + strings.ReplaceAll(principal, "/", "_") + ".keytab"
+	if err := execIn(ctx, c, []string{
+		"samba-tool", "domain", "exportkeytab", path,
+		"--principal=" + principal,
+	}); err != nil {
+		return fmt.Errorf("exportkeytab %s: %w", principal, err)
+	}
+	rc, err := c.CopyFileFromContainer(ctx, path)
+	if err != nil {
+		return fmt.Errorf("copy keytab for %s: %w", principal, err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return fmt.Errorf("read keytab for %s: %w", principal, err)
+	}
+	s.keytabs[principal] = data
+	logKeytabSummary(principal, data)
 	return nil
 }
 

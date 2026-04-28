@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"strings"
 	"time"
 
@@ -39,6 +38,11 @@ const (
 	// trustEnctypes pins the cross-realm krbtgt to AES enctypes both
 	// KDCs support.
 	trustEnctypes = "aes256-cts-hmac-sha1-96:normal,aes128-cts-hmac-sha1-96:normal,aes256-cts-hmac-sha384-192:normal,aes128-cts-hmac-sha256-128:normal"
+
+	// MITHTTPSPN is the SPN of the HTTP service the MIT topology
+	// provisions in HOME.GOKRB5. Tests pass this to
+	// framework.StartHTTPAcceptor.
+	MITHTTPSPN = "HTTP/host.home.gokrb5"
 )
 
 // MITTopology declares the realms, principals, and trusts to
@@ -352,28 +356,6 @@ func execIn(ctx context.Context, c testcontainers.Container, cmd []string) error
 	return nil
 }
 
-// logFixtureVersions logs the OS pretty name and dpkg-reported
-// versions of the named packages from inside c, prefixed with label.
-// Best-effort; failures are logged but don't abort.
-func logFixtureVersions(ctx context.Context, c testcontainers.Container, label string, packages ...string) {
-	parts := []string{`. /etc/os-release && echo "os=$PRETTY_NAME"`}
-	for _, pkg := range packages {
-		parts = append(parts, fmt.Sprintf(`dpkg-query -W -f='%s=${Version}\n' %s 2>/dev/null`, pkg, pkg))
-	}
-	cmd := strings.Join(parts, "; ")
-	_, reader, err := c.Exec(ctx, []string{"sh", "-c", cmd}, tcexec.Multiplexed())
-	if err != nil {
-		log.Printf("%s: version probe failed: %v", label, err)
-		return
-	}
-	out, _ := io.ReadAll(reader)
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line != "" {
-			log.Printf("%s: %s", label, line)
-		}
-	}
-}
-
 // extractKeytab returns the keytab bytes for the given principal.
 // norandkey preserves the principal's stored key; otherwise ktadd
 // rotates it before export.
@@ -393,7 +375,12 @@ func extractKeytab(ctx context.Context, c testcontainers.Container, principal, p
 		return nil, fmt.Errorf("copy keytab %s: %w", path, err)
 	}
 	defer rc.Close()
-	return io.ReadAll(rc)
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, err
+	}
+	logKeytabSummary(principal, data)
+	return data, nil
 }
 
 // keytabBasename turns an SPN into a filename-safe form by replacing
