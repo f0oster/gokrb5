@@ -12,16 +12,21 @@ type Settings struct {
 	assumePreAuthentication atomic.Bool
 	preAuthEType            atomic.Int32
 	logger                  *log.Logger
+	maxKDCResponseBytes     int
 }
 
 // jsonSettings is used when marshaling the Settings details to JSON format.
 type jsonSettings struct {
 	AssumePreAuthentication bool
+	MaxKDCResponseBytes     int
 }
+
+// DefaultMaxKDCResponseBytes is the default cap for a KDC TCP response.
+const DefaultMaxKDCResponseBytes = 1 << 20 // 1 MiB
 
 // NewSettings creates a new client settings struct.
 func NewSettings(settings ...func(*Settings)) *Settings {
-	s := new(Settings)
+	s := &Settings{maxKDCResponseBytes: DefaultMaxKDCResponseBytes}
 	for _, set := range settings {
 		set(s)
 	}
@@ -56,6 +61,20 @@ func (s *Settings) Logger() *log.Logger {
 	return s.logger
 }
 
+// MaxKDCResponseBytes sets the cap on a KDC TCP response.
+//
+// s := NewSettings(MaxKDCResponseBytes(2 << 20))
+func MaxKDCResponseBytes(n int) func(*Settings) {
+	return func(s *Settings) {
+		s.maxKDCResponseBytes = n
+	}
+}
+
+// MaxKDCResponseBytes returns the configured cap for a KDC TCP response.
+func (s *Settings) MaxKDCResponseBytes() int {
+	return s.maxKDCResponseBytes
+}
+
 // Log will write to the service's logger if it is configured.
 func (cl *Client) Log(format string, v ...interface{}) {
 	if cl.settings.Logger() != nil {
@@ -67,6 +86,7 @@ func (cl *Client) Log(format string, v ...interface{}) {
 func (s *Settings) JSON() (string, error) {
 	js := jsonSettings{
 		AssumePreAuthentication: s.assumePreAuthentication.Load(),
+		MaxKDCResponseBytes:     s.maxKDCResponseBytes,
 	}
 	b, err := json.MarshalIndent(js, "", "  ")
 	if err != nil {

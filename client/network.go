@@ -132,7 +132,7 @@ func (cl *Client) sendKDCTCP(realm string, b []byte) ([]byte, error) {
 	if err != nil {
 		return r, err
 	}
-	r, err = dialSendTCP(kdcs, b)
+	r, err = dialSendTCP(kdcs, b, cl.settings.MaxKDCResponseBytes())
 	if err != nil {
 		return r, err
 	}
@@ -140,7 +140,7 @@ func (cl *Client) sendKDCTCP(realm string, b []byte) ([]byte, error) {
 }
 
 // dialKDCTCP establishes a TCP connection to a KDC.
-func dialSendTCP(kdcs map[int]string, b []byte) ([]byte, error) {
+func dialSendTCP(kdcs map[int]string, b []byte, maxResp int) ([]byte, error) {
 	var errs []string
 	for i := 1; i <= len(kdcs); i++ {
 		conn, err := net.DialTimeout("tcp", kdcs[i], 5*time.Second)
@@ -153,7 +153,7 @@ func dialSendTCP(kdcs map[int]string, b []byte) ([]byte, error) {
 			continue
 		}
 		// conn is guaranteed to be a TCPConn
-		rb, err := sendTCP(conn.(*net.TCPConn), b)
+		rb, err := sendTCP(conn.(*net.TCPConn), b, maxResp)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("error sending to %s: %v", kdcs[i], err))
 			continue
@@ -164,7 +164,7 @@ func dialSendTCP(kdcs map[int]string, b []byte) ([]byte, error) {
 }
 
 // sendTCP sends bytes to connection over TCP.
-func sendTCP(conn *net.TCPConn, b []byte) ([]byte, error) {
+func sendTCP(conn *net.TCPConn, b []byte, maxResp int) ([]byte, error) {
 	defer conn.Close()
 	var r []byte
 	// RFC 4120 7.2.2 specifies the first 4 bytes indicate the length of the message in big endian order.
@@ -183,6 +183,9 @@ func sendTCP(conn *net.TCPConn, b []byte) ([]byte, error) {
 		return r, fmt.Errorf("error reading response size header: %v", err)
 	}
 	s := binary.BigEndian.Uint32(sh)
+	if maxResp > 0 && int64(s) > int64(maxResp) {
+		return r, fmt.Errorf("response size %d exceeds configured maximum %d", s, maxResp)
+	}
 
 	rb := make([]byte, s, s)
 	_, err = io.ReadFull(conn, rb)
