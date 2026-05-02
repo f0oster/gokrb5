@@ -103,6 +103,10 @@ func NewASReqForChgPasswd(realm string, c *config.Config, cname types.PrincipalN
 
 // NewASReq generates a new KRB_AS_REQ struct for a given SNAME.
 func NewASReq(realm string, c *config.Config, cname, sname types.PrincipalName) (ASReq, error) {
+	etypes := c.LibDefaults.ASReqEtypeIDs()
+	if len(etypes) == 0 {
+		return ASReq{}, fmt.Errorf("default_tkt_enctypes and permitted_enctypes have no etypes in common")
+	}
 	nonce, err := rand.Int(rand.Reader, big.NewInt(math.MaxInt32))
 	if err != nil {
 		return ASReq{}, err
@@ -129,7 +133,7 @@ func NewASReq(realm string, c *config.Config, cname, sname types.PrincipalName) 
 				SName:      sname,
 				Till:       t.Add(c.LibDefaults.TicketLifetime),
 				Nonce:      int(nonce.Int64()),
-				EType:      c.LibDefaults.ASReqEtypeIDs(),
+				EType:      etypes,
 			},
 		},
 	}
@@ -181,6 +185,10 @@ func NewUser2UserTGSReq(cname types.PrincipalName, kdcRealm string, c *config.Co
 
 // tgsReq populates the fields for a TGS_REQ
 func tgsReq(cname, sname types.PrincipalName, kdcRealm string, renewal bool, c *config.Config) (TGSReq, error) {
+	etypes := c.LibDefaults.TGSReqEtypeIDs()
+	if len(etypes) == 0 {
+		return TGSReq{}, fmt.Errorf("default_tgs_enctypes and permitted_enctypes have no etypes in common")
+	}
 	nonce, err := rand.Int(rand.Reader, big.NewInt(math.MaxInt32))
 	if err != nil {
 		return TGSReq{}, err
@@ -196,7 +204,7 @@ func tgsReq(cname, sname types.PrincipalName, kdcRealm string, renewal bool, c *
 			SName:      sname,
 			Till:       t.Add(c.LibDefaults.TicketLifetime),
 			Nonce:      int(nonce.Int64()),
-			EType:      c.LibDefaults.TGSReqEtypeIDs(),
+			EType:      etypes,
 		},
 		Renewal: renewal,
 	}
