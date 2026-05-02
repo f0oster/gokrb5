@@ -37,8 +37,6 @@ func EncryptMessage(key, message []byte, usage uint32, e etype.EType) ([]byte, [
 	if len(key) != kl {
 		return []byte{}, []byte{}, fmt.Errorf("incorrect keysize: expected: %v actual: %v", kl, len(key))
 	}
-	if len(key) != e.GetKeyByteSize() {
-	}
 	//confounder
 	c := make([]byte, e.GetConfounderByteSize())
 	_, err := rand.Read(c)
