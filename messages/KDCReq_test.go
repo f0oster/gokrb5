@@ -6,12 +6,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/f0oster/gokrb5/config"
 	"github.com/f0oster/gokrb5/iana"
 	"github.com/f0oster/gokrb5/iana/addrtype"
+	"github.com/f0oster/gokrb5/iana/flags"
 	"github.com/f0oster/gokrb5/iana/msgtype"
 	"github.com/f0oster/gokrb5/iana/nametype"
 	"github.com/f0oster/gokrb5/iana/patype"
 	"github.com/f0oster/gokrb5/test/testdata"
+	"github.com/f0oster/gokrb5/types"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -423,4 +426,26 @@ func TestMarshalTGSReq(t *testing.T) {
 		t.Fatalf("Marshal of ticket errored: %v", err)
 	}
 	assert.Equal(t, b, mb, "Marshal bytes of TGSReq not as expected")
+}
+
+func TestNewASReqForTGTPreservesRenewLifetime(t *testing.T) {
+	t.Parallel()
+	c := config.New()
+	c.LibDefaults.RenewLifetime = 24 * time.Hour
+	c.LibDefaults.NoAddresses = true
+	cname := types.PrincipalName{
+		NameType:   nametype.KRB_NT_PRINCIPAL,
+		NameString: []string{"alice"},
+	}
+	before := time.Now().UTC()
+	a, err := NewASReqForTGT("EXAMPLE.COM", c, cname)
+	after := time.Now().UTC()
+	if err != nil {
+		t.Fatalf("NewASReqForTGT errored: %v", err)
+	}
+	assert.True(t, types.IsFlagSet(&a.ReqBody.KDCOptions, flags.Renewable), "Renewable flag should be set when RenewLifetime is non-zero")
+	minRTime := before.Add(24 * time.Hour)
+	maxRTime := after.Add(24 * time.Hour)
+	assert.False(t, a.ReqBody.RTime.Before(minRTime), "RTime %v should be at or after %v", a.ReqBody.RTime, minRTime)
+	assert.False(t, a.ReqBody.RTime.After(maxRTime), "RTime %v should be at or before %v", a.ReqBody.RTime, maxRTime)
 }
