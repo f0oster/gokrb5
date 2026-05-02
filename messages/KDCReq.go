@@ -129,7 +129,7 @@ func NewASReq(realm string, c *config.Config, cname, sname types.PrincipalName) 
 				SName:      sname,
 				Till:       t.Add(c.LibDefaults.TicketLifetime),
 				Nonce:      int(nonce.Int64()),
-				EType:      c.LibDefaults.DefaultTktEnctypeIDs,
+				EType:      c.LibDefaults.ASReqEtypeIDs(),
 			},
 		},
 	}
@@ -196,7 +196,7 @@ func tgsReq(cname, sname types.PrincipalName, kdcRealm string, renewal bool, c *
 			SName:      sname,
 			Till:       t.Add(c.LibDefaults.TicketLifetime),
 			Nonce:      int(nonce.Int64()),
-			EType:      c.LibDefaults.DefaultTGSEnctypeIDs,
+			EType:      c.LibDefaults.TGSReqEtypeIDs(),
 		},
 		Renewal: renewal,
 	}
