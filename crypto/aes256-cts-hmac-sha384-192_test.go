@@ -6,8 +6,20 @@ import (
 
 	"github.com/f0oster/gokrb5/crypto/common"
 	"github.com/f0oster/gokrb5/crypto/rfc8009"
+	"github.com/f0oster/gokrb5/types"
 	"github.com/stretchr/testify/assert"
 )
+
+func TestAes256CtsHmacSha384192_KeyByteSize(t *testing.T) {
+	t.Parallel()
+	var e Aes256CtsHmacSha384192
+	assert.Equal(t, 32, e.GetKeyByteSize(), "protocol key length is 256 bits per RFC 8009 §3")
+	k, err := types.GenerateEncryptionKey(e)
+	if err != nil {
+		t.Fatalf("GenerateEncryptionKey: %v", err)
+	}
+	assert.Equal(t, 32, len(k.KeyValue), "generated encryption key length matches the protocol key length")
+}
 
 func TestAes256CtsHmacSha384192_StringToKey(t *testing.T) {
 	t.Parallel()

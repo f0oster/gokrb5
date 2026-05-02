@@ -30,12 +30,12 @@ func (e Aes256CtsHmacSha384192) GetHashID() int32 {
 
 // GetKeyByteSize returns the number of bytes for key of this etype.
 func (e Aes256CtsHmacSha384192) GetKeyByteSize() int {
-	return 192 / 8
+	return 32
 }
 
 // GetKeySeedBitLength returns the number of bits for the seed for key generation.
 func (e Aes256CtsHmacSha384192) GetKeySeedBitLength() int {
-	return e.GetKeyByteSize() * 8
+	return 256
 }
 
 // GetHashFunc returns the hash function for this etype.

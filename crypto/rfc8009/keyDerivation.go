@@ -26,34 +26,15 @@ func DeriveRandom(protocolKey, usage []byte, e etype.EType) ([]byte, error) {
 // https://tools.ietf.org/html/rfc8009#section-5
 func DeriveKey(protocolKey, label []byte, e etype.EType) []byte {
 	var context []byte
-	var kl int
-	// Key length is longer for aes256-cts-hmac-sha384-192 is it is a Ke or from StringToKey (where label is "kerberos")
+	kl := e.GetKeySeedBitLength()
+	// For aes256-cts-hmac-sha384-192, Kc (label suffix 0x99) and Ki (label suffix
+	// 0x55) are truncated to the HMAC output length (192 bits) per RFC 8009 §3.
+	// Ke (0xAA) and the StringToKey "kerberos" label use the protocol key length.
 	if e.GetETypeID() == etypeID.AES256_CTS_HMAC_SHA384_192 {
-	Swtch:
 		switch label[len(label)-1] {
-		case 0x73:
-			// 0x73 is "s" so label could be kerberos meaning StringToKey so now check if the label is "kerberos"
-			kerblabel := []byte("kerberos")
-			if len(label) != len(kerblabel) {
-				break
-			}
-			for i, b := range label {
-				if b != kerblabel[i] {
-					kl = e.GetKeySeedBitLength()
-					break Swtch
-				}
-			}
-			if kl == 0 {
-				// This is StringToKey
-				kl = 256
-			}
-		case 0xAA:
-			// This is a Ke
-			kl = 256
+		case 0x99, 0x55:
+			kl = 192
 		}
-	}
-	if kl == 0 {
-		kl = e.GetKeySeedBitLength()
 	}
 	return e.RandomToKey(KDF_HMAC_SHA2(protocolKey, label, context, kl, e))
 }
@@ -80,11 +61,7 @@ func StringToKeyIter(secret, salt string, iterations int, e etype.EType) ([]byte
 
 // StringToPBKDF2 generates an encryption key from a pass phrase and salt string using the PBKDF2 function from PKCS #5 v2.0
 func StringToPBKDF2(secret, salt string, iterations int, e etype.EType) []byte {
-	kl := e.GetKeyByteSize()
-	if e.GetETypeID() == etypeID.AES256_CTS_HMAC_SHA384_192 {
-		kl = 32
-	}
-	return pbkdf2.Key([]byte(secret), []byte(salt), iterations, kl, e.GetHashFunc())
+	return pbkdf2.Key([]byte(secret), []byte(salt), iterations, e.GetKeyByteSize(), e.GetHashFunc())
 }
 
 // KDF_HMAC_SHA2 key derivation: https://tools.ietf.org/html/rfc8009#section-3
