@@ -459,32 +459,52 @@ func requireMITHTTPAcceptor(t *testing.T) framework.HTTPAcceptor {
 }
 
 // TestSPNEGO_HTTP_MIT runs an end-to-end SPNEGO HTTP exchange with
-// an MIT-issued service ticket.
+// an MIT-issued service ticket under each supported AES enctype.
 func TestSPNEGO_HTTP_MIT(t *testing.T) {
 	kdc := requireMIT(t)
 	acceptor := requireMITHTTPAcceptor(t)
 	t.Cleanup(func() { dumpAcceptorLogsOnFailure(t, acceptor) })
 
-	cl, err := kdc.NewClient("nopreauth_user", framework.MITUserPassword)
-	if err != nil {
-		t.Fatalf("build client: %v", err)
-	}
-	defer cl.Destroy()
-	if err := cl.Login(); err != nil {
-		t.Fatalf("login: %v", err)
+	enctypes := []string{
+		"aes256-cts-hmac-sha1-96",
+		"aes128-cts-hmac-sha1-96",
+		"aes256-cts-hmac-sha384-192",
+		"aes128-cts-hmac-sha256-128",
 	}
 
-	spc := spnego.NewClient(cl, nil, acceptor.SPN())
-	resp, err := spc.Get(acceptor.BaseURL() + "/spnego/")
-	if err != nil {
-		t.Fatalf("authenticated GET: %v", err)
-	}
-	defer resp.Body.Close()
-	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
-		t.Fatalf("read body: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	for _, et := range enctypes {
+		t.Run(et, func(t *testing.T) {
+			cfg, err := kdc.Config()
+			if err != nil {
+				t.Fatalf("config: %v", err)
+			}
+			id := etypeID.ETypesByName[et]
+			cfg.LibDefaults.DefaultTktEnctypes = []string{et}
+			cfg.LibDefaults.DefaultTktEnctypeIDs = []int32{id}
+			cfg.LibDefaults.DefaultTGSEnctypes = []string{et}
+			cfg.LibDefaults.DefaultTGSEnctypeIDs = []int32{id}
+			cfg.LibDefaults.PermittedEnctypes = []string{et}
+			cfg.LibDefaults.PermittedEnctypeIDs = []int32{id}
+
+			cl := client.NewWithPassword("nopreauth_user", kdc.Realm(), framework.MITUserPassword, cfg)
+			defer cl.Destroy()
+			if err := cl.Login(); err != nil {
+				t.Fatalf("login: %v", err)
+			}
+
+			spc := spnego.NewClient(cl, nil, acceptor.SPN())
+			resp, err := spc.Get(acceptor.BaseURL() + "/spnego/")
+			if err != nil {
+				t.Fatalf("authenticated GET: %v", err)
+			}
+			defer resp.Body.Close()
+			if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200", resp.StatusCode)
+			}
+		})
 	}
 }
 
