@@ -83,6 +83,41 @@ type LibDefaults struct {
 	VerifyAPReqNofail     bool          //default false
 }
 
+// ASReqEtypeIDs returns default_tkt_enctypes intersected with
+// permitted_enctypes, preserving default_tkt_enctypes order. If
+// permitted_enctypes is empty, default_tkt_enctypes is returned
+// unchanged.
+func (l *LibDefaults) ASReqEtypeIDs() []int32 {
+	return intersectEtypeIDs(l.DefaultTktEnctypeIDs, l.PermittedEnctypeIDs)
+}
+
+// TGSReqEtypeIDs returns default_tgs_enctypes intersected with
+// permitted_enctypes, preserving default_tgs_enctypes order. If
+// permitted_enctypes is empty, default_tgs_enctypes is returned
+// unchanged.
+func (l *LibDefaults) TGSReqEtypeIDs() []int32 {
+	return intersectEtypeIDs(l.DefaultTGSEnctypeIDs, l.PermittedEnctypeIDs)
+}
+
+// intersectEtypeIDs returns the elements of candidates that also appear
+// in permitted, in the order given by candidates. If permitted is empty,
+// candidates is returned unchanged.
+func intersectEtypeIDs(candidates, permitted []int32) []int32 {
+	if len(permitted) == 0 {
+		return candidates
+	}
+	out := make([]int32, 0, len(candidates))
+	for _, c := range candidates {
+		for _, p := range permitted {
+			if c == p {
+				out = append(out, c)
+				break
+			}
+		}
+	}
+	return out
+}
+
 // Create a new LibDefaults struct.
 func newLibDefaults() LibDefaults {
 	uid := "0"
