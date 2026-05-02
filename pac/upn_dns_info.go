@@ -2,6 +2,7 @@ package pac
 
 import (
 	"bytes"
+	"fmt"
 
 	"github.com/jcmturner/rpc/v2/mstypes"
 )
@@ -44,6 +45,12 @@ func (k *UPNDNSInfo) Unmarshal(b []byte) (err error) {
 	k.Flags, err = r.Uint32()
 	if err != nil {
 		return
+	}
+	if int(k.UPNOffset)+int(k.UPNLength) > len(b) {
+		return fmt.Errorf("UPN range %d+%d exceeds buffer length %d", k.UPNOffset, k.UPNLength, len(b))
+	}
+	if int(k.DNSDomainNameOffset)+int(k.DNSDomainNameLength) > len(b) {
+		return fmt.Errorf("DNS domain range %d+%d exceeds buffer length %d", k.DNSDomainNameOffset, k.DNSDomainNameLength, len(b))
 	}
 	ub := mstypes.NewReader(bytes.NewReader(b[k.UPNOffset : k.UPNOffset+k.UPNLength]))
 	db := mstypes.NewReader(bytes.NewReader(b[k.DNSDomainNameOffset : k.DNSDomainNameOffset+k.DNSDomainNameLength]))
