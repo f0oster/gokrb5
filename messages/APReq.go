@@ -2,6 +2,7 @@ package messages
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jcmturner/gofork/encoding/asn1"
@@ -140,7 +141,16 @@ func (a *APReq) Marshal() ([]byte, error) {
 
 // Verify an AP_REQ using service's keytab, spn and max acceptable clock skew duration.
 // The service ticket encrypted part and authenticator will be decrypted as part of this operation.
-func (a *APReq) Verify(kt *keytab.Keytab, d time.Duration, cAddr types.HostAddress, snameOverride *types.PrincipalName) (bool, error) {
+// If permitted is non-empty, the ticket and authenticator etypes must be in it.
+func (a *APReq) Verify(kt *keytab.Keytab, d time.Duration, cAddr types.HostAddress, snameOverride *types.PrincipalName, permitted []int32) (bool, error) {
+	if len(permitted) > 0 {
+		if !slices.Contains(permitted, a.Ticket.EncPart.EType) {
+			return false, NewKRBError(a.Ticket.SName, a.Ticket.Realm, errorcode.KRB_AP_ERR_BADKEYVER, fmt.Sprintf("ticket etype %d not in permitted_enctypes", a.Ticket.EncPart.EType))
+		}
+		if !slices.Contains(permitted, a.EncryptedAuthenticator.EType) {
+			return false, NewKRBError(a.Ticket.SName, a.Ticket.Realm, errorcode.KRB_AP_ERR_BADKEYVER, fmt.Sprintf("authenticator etype %d not in permitted_enctypes", a.EncryptedAuthenticator.EType))
+		}
+	}
 	// Decrypt ticket's encrypted part with service key
 	//TODO decrypt with service's session key from its TGT is use-to-user. Need to figure out how to get TGT.
 	//if types.IsFlagSet(&a.APOptions, flags.APOptionUseSessionKey) {

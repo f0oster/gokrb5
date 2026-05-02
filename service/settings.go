@@ -20,6 +20,7 @@ type Settings struct {
 	maxClockSkew       time.Duration
 	logger             *log.Logger
 	sessionMgr         SessionMgr
+	permittedEnctypes  []int32
 }
 
 // NewSettings creates a new service Settings.
@@ -149,6 +150,24 @@ func SessionManager(sm SessionMgr) func(*Settings) {
 // SessionManager returns any configured session manager.
 func (s *Settings) SessionManager() SessionMgr {
 	return s.sessionMgr
+}
+
+// PermittedEnctypes used to configure the service-side allow-list for
+// ticket and authenticator etypes. An AP-REQ presenting a ticket or
+// authenticator outside this list is rejected before decryption.
+//
+// s := NewSettings(kt, PermittedEnctypes(ids))
+func PermittedEnctypes(ids []int32) func(*Settings) {
+	return func(s *Settings) {
+		s.permittedEnctypes = ids
+	}
+}
+
+// PermittedEnctypes returns the service-side allow-list of etypes for
+// ticket and authenticator decryption. An empty list means no
+// restriction.
+func (s *Settings) PermittedEnctypes() []int32 {
+	return s.permittedEnctypes
 }
 
 // SessionMgr must provide a ways to:
