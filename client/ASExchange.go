@@ -1,6 +1,8 @@
 package client
 
 import (
+	"slices"
+
 	"github.com/f0oster/gokrb5/crypto"
 	"github.com/f0oster/gokrb5/crypto/etype"
 	"github.com/f0oster/gokrb5/iana/errorcode"
@@ -118,7 +120,7 @@ func setPAData(cl *Client, krberr *messages.KRBError, ASReq *messages.ASReq) err
 			}
 		} else {
 			// Get the etype to use from the PA data in the KRBError e-data
-			et, err = preAuthEType(krberr)
+			et, err = preAuthEType(krberr, cl.Config.LibDefaults.PermittedEnctypeIDs)
 			if err != nil {
 				return krberror.Errorf(err, krberror.EncryptingError, "error getting etype for pre-auth encryption")
 			}
@@ -157,40 +159,61 @@ func setPAData(cl *Client, krberr *messages.KRBError, ASReq *messages.ASReq) err
 	return nil
 }
 
-// preAuthEType establishes what encryption type to use for pre-authentication from the KRBError returned from the KDC.
-func preAuthEType(krberr *messages.KRBError) (etype etype.EType, err error) {
-	//RFC 4120 5.2.7.5 covers the preference order of ETYPE-INFO2 and ETYPE-INFO.
-	var etypeID int32
+// preAuthEType picks an etype for pre-authentication from the KDC's
+// KRBError hints, constrained to those in permitted.
+func preAuthEType(krberr *messages.KRBError, permitted []int32) (etype.EType, error) {
 	var pas types.PADataSequence
-	e := pas.Unmarshal(krberr.EData)
-	if e != nil {
-		err = krberror.Errorf(e, krberror.EncodingError, "error unmashalling KRBError data")
-		return
+	if err := pas.Unmarshal(krberr.EData); err != nil {
+		return nil, krberror.Errorf(err, krberror.EncodingError, "error unmarshaling KRBError data")
 	}
-Loop:
+	var info2 types.ETypeInfo2
+	var info1 types.ETypeInfo
 	for _, pa := range pas {
 		switch pa.PADataType {
 		case patype.PA_ETYPE_INFO2:
-			info, e := pa.GetETypeInfo2()
-			if e != nil {
-				err = krberror.Errorf(e, krberror.EncodingError, "error unmashalling ETYPE-INFO2 data")
-				return
+			entries, err := pa.GetETypeInfo2()
+			if err != nil {
+				return nil, krberror.Errorf(err, krberror.EncodingError, "error unmarshaling ETYPE-INFO2 data")
 			}
-			etypeID = info[0].EType
-			break Loop
+			if info2 == nil {
+				info2 = entries
+			}
 		case patype.PA_ETYPE_INFO:
-			info, e := pa.GetETypeInfo()
-			if e != nil {
-				err = krberror.Errorf(e, krberror.EncodingError, "error unmashalling ETYPE-INFO data")
-				return
+			entries, err := pa.GetETypeInfo()
+			if err != nil {
+				return nil, krberror.Errorf(err, krberror.EncodingError, "error unmarshaling ETYPE-INFO data")
 			}
-			etypeID = info[0].EType
+			if info1 == nil {
+				info1 = entries
+			}
 		}
 	}
-	etype, e = crypto.GetEtype(etypeID)
-	if e != nil {
-		err = krberror.Errorf(e, krberror.EncryptingError, "error creating etype")
-		return
+	// RFC 4120 §5.2.7.5: ETYPE-INFO2 is preferred over ETYPE-INFO.
+	candidates := make([]int32, 0, len(info2)+len(info1))
+	for _, e := range info2 {
+		candidates = append(candidates, e.EType)
 	}
-	return etype, nil
+	if len(info2) == 0 {
+		for _, e := range info1 {
+			candidates = append(candidates, e.EType)
+		}
+	}
+	for _, id := range candidates {
+		if !etypePermitted(id, permitted) {
+			continue
+		}
+		et, err := crypto.GetEtype(id)
+		if err != nil {
+			continue
+		}
+		return et, nil
+	}
+	return nil, krberror.NewErrorf(krberror.EncryptingError, "KDC offered no etype permitted by client policy")
+}
+
+func etypePermitted(id int32, permitted []int32) bool {
+	if len(permitted) == 0 {
+		return true
+	}
+	return slices.Contains(permitted, id)
 }
