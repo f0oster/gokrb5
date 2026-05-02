@@ -97,8 +97,12 @@ func DES3DecryptMessage(key, ciphertext []byte, usage uint32, e etype.EType) ([]
 	if err != nil {
 		return nil, fmt.Errorf("error deriving key: %v", err)
 	}
+	macLen := e.GetHMACBitLength() / 8
+	if len(ciphertext) < macLen {
+		return nil, fmt.Errorf("ciphertext too short: %d < %d", len(ciphertext), macLen)
+	}
 	// Strip off the checksum from the end
-	b, err := e.DecryptData(k, ciphertext[:len(ciphertext)-e.GetHMACBitLength()/8])
+	b, err := e.DecryptData(k, ciphertext[:len(ciphertext)-macLen])
 	if err != nil {
 		return nil, fmt.Errorf("error decrypting: %v", err)
 	}
