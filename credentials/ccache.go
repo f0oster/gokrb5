@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -101,7 +102,11 @@ func (c *CCache) Unmarshal(b []byte) error {
 			return err
 		}
 	}
-	c.DefaultPrincipal = parsePrincipal(b, &p, c, &endian)
+	pr, err := parsePrincipal(b, &p, c, &endian)
+	if err != nil {
+		return err
+	}
+	c.DefaultPrincipal = pr
 	for p < len(b) {
 		cred, err := parseCredential(b, &p, c, &endian)
 		if err != nil {
@@ -117,13 +122,28 @@ func parseHeader(b []byte, p *int, c *CCache, e *binary.ByteOrder) error {
 		return errors.New("Credentials cache version is not 4 so there is no header to parse.")
 	}
 	h := header{}
-	h.length = uint16(readInt16(b, p, e))
+	hl, err := readInt16(b, p, e)
+	if err != nil {
+		return err
+	}
+	h.length = uint16(hl)
 	for *p <= int(h.length) {
 		f := headerField{}
-		f.tag = uint16(readInt16(b, p, e))
-		f.length = uint16(readInt16(b, p, e))
-		f.value = b[*p : *p+int(f.length)]
-		*p += int(f.length)
+		ft, err := readInt16(b, p, e)
+		if err != nil {
+			return err
+		}
+		f.tag = uint16(ft)
+		fl, err := readInt16(b, p, e)
+		if err != nil {
+			return err
+		}
+		f.length = uint16(fl)
+		fv, err := readBytes(b, p, int(f.length), e)
+		if err != nil {
+			return err
+		}
+		f.value = fv
 		if !f.valid() {
 			return errors.New("Invalid credential cache header found")
 		}
@@ -134,61 +154,141 @@ func parseHeader(b []byte, p *int, c *CCache, e *binary.ByteOrder) error {
 }
 
 // Parse the Keytab bytes of a principal into a Keytab entry's principal.
-func parsePrincipal(b []byte, p *int, c *CCache, e *binary.ByteOrder) (princ principal) {
+func parsePrincipal(b []byte, p *int, c *CCache, e *binary.ByteOrder) (principal, error) {
+	var princ principal
 	if c.Version != 1 {
 		//Name Type is omitted in version 1
-		princ.PrincipalName.NameType = readInt32(b, p, e)
+		nt, err := readInt32(b, p, e)
+		if err != nil {
+			return princ, err
+		}
+		princ.PrincipalName.NameType = nt
 	}
-	nc := int(readInt32(b, p, e))
+	ncRaw, err := readInt32(b, p, e)
+	if err != nil {
+		return princ, err
+	}
+	nc := int(ncRaw)
 	if c.Version == 1 {
 		//In version 1 the number of components includes the realm. Minus 1 to make consistent with version 2
 		nc--
 	}
-	lenRealm := readInt32(b, p, e)
-	princ.Realm = string(readBytes(b, p, int(lenRealm), e))
-	for i := 0; i < nc; i++ {
-		l := readInt32(b, p, e)
-		princ.PrincipalName.NameString = append(princ.PrincipalName.NameString, string(readBytes(b, p, int(l), e)))
+	if nc < 0 || nc > len(b)-*p {
+		return princ, fmt.Errorf("ccache: invalid principal component count %d", nc)
 	}
-	return princ
+	lenRealm, err := readInt32(b, p, e)
+	if err != nil {
+		return princ, err
+	}
+	rb, err := readBytes(b, p, int(lenRealm), e)
+	if err != nil {
+		return princ, err
+	}
+	princ.Realm = string(rb)
+	for i := 0; i < nc; i++ {
+		l, err := readInt32(b, p, e)
+		if err != nil {
+			return princ, err
+		}
+		cb, err := readBytes(b, p, int(l), e)
+		if err != nil {
+			return princ, err
+		}
+		princ.PrincipalName.NameString = append(princ.PrincipalName.NameString, string(cb))
+	}
+	return princ, nil
 }
 
-func parseCredential(b []byte, p *int, c *CCache, e *binary.ByteOrder) (cred *Credential, err error) {
-	cred = new(Credential)
-	cred.Client = parsePrincipal(b, p, c, e)
-	cred.Server = parsePrincipal(b, p, c, e)
+func parseCredential(b []byte, p *int, c *CCache, e *binary.ByteOrder) (*Credential, error) {
+	cred := new(Credential)
+	cl, err := parsePrincipal(b, p, c, e)
+	if err != nil {
+		return nil, err
+	}
+	cred.Client = cl
+	srv, err := parsePrincipal(b, p, c, e)
+	if err != nil {
+		return nil, err
+	}
+	cred.Server = srv
 	key := types.EncryptionKey{}
-	key.KeyType = int32(readInt16(b, p, e))
+	kt, err := readInt16(b, p, e)
+	if err != nil {
+		return nil, err
+	}
+	key.KeyType = int32(kt)
 	if c.Version == 3 {
 		//repeated twice in version 3
-		key.KeyType = int32(readInt16(b, p, e))
+		kt, err = readInt16(b, p, e)
+		if err != nil {
+			return nil, err
+		}
+		key.KeyType = int32(kt)
 	}
-	key.KeyValue = readData(b, p, e)
+	kv, err := readData(b, p, e)
+	if err != nil {
+		return nil, err
+	}
+	key.KeyValue = kv
 	cred.Key = key
-	cred.AuthTime = readTimestamp(b, p, e)
-	cred.StartTime = readTimestamp(b, p, e)
-	cred.EndTime = readTimestamp(b, p, e)
-	cred.RenewTill = readTimestamp(b, p, e)
-	if ik := readInt8(b, p, e); ik == 0 {
-		cred.IsSKey = false
-	} else {
-		cred.IsSKey = true
+	if cred.AuthTime, err = readTimestamp(b, p, e); err != nil {
+		return nil, err
 	}
+	if cred.StartTime, err = readTimestamp(b, p, e); err != nil {
+		return nil, err
+	}
+	if cred.EndTime, err = readTimestamp(b, p, e); err != nil {
+		return nil, err
+	}
+	if cred.RenewTill, err = readTimestamp(b, p, e); err != nil {
+		return nil, err
+	}
+	ik, err := readInt8(b, p, e)
+	if err != nil {
+		return nil, err
+	}
+	cred.IsSKey = ik != 0
 	cred.TicketFlags = types.NewKrbFlags()
-	cred.TicketFlags.Bytes = readBytes(b, p, 4, e)
-	l := int(readInt32(b, p, e))
-	cred.Addresses = make([]types.HostAddress, l, l)
+	tf, err := readBytes(b, p, 4, e)
+	if err != nil {
+		return nil, err
+	}
+	cred.TicketFlags.Bytes = tf
+	la, err := readInt32(b, p, e)
+	if err != nil {
+		return nil, err
+	}
+	l := int(la)
+	if l < 0 || l > len(b)-*p {
+		return nil, fmt.Errorf("ccache: invalid address count %d", l)
+	}
+	cred.Addresses = make([]types.HostAddress, l)
 	for i := range cred.Addresses {
-		cred.Addresses[i] = readAddress(b, p, e)
+		if cred.Addresses[i], err = readAddress(b, p, e); err != nil {
+			return nil, err
+		}
 	}
-	l = int(readInt32(b, p, e))
-	cred.AuthData = make([]types.AuthorizationDataEntry, l, l)
+	ld, err := readInt32(b, p, e)
+	if err != nil {
+		return nil, err
+	}
+	l = int(ld)
+	if l < 0 || l > len(b)-*p {
+		return nil, fmt.Errorf("ccache: invalid authdata count %d", l)
+	}
+	cred.AuthData = make([]types.AuthorizationDataEntry, l)
 	for i := range cred.AuthData {
-		cred.AuthData[i] = readAuthDataEntry(b, p, e)
+		if cred.AuthData[i], err = readAuthDataEntry(b, p, e); err != nil {
+			return nil, err
+		}
 	}
-	cred.Ticket = readData(b, p, e)
-	cred.SecondTicket = readData(b, p, e)
-	return
+	if cred.Ticket, err = readData(b, p, e); err != nil {
+		return nil, err
+	}
+	if cred.SecondTicket, err = readData(b, p, e); err != nil {
+		return nil, err
+	}
+	return cred, nil
 }
 
 // GetClientPrincipalName returns a PrincipalName type for the client the credentials cache is for.
@@ -262,60 +362,89 @@ func (h *headerField) valid() bool {
 	return false
 }
 
-func readData(b []byte, p *int, e *binary.ByteOrder) []byte {
-	l := readInt32(b, p, e)
+func readData(b []byte, p *int, e *binary.ByteOrder) ([]byte, error) {
+	l, err := readInt32(b, p, e)
+	if err != nil {
+		return nil, err
+	}
 	return readBytes(b, p, int(l), e)
 }
 
-func readAddress(b []byte, p *int, e *binary.ByteOrder) types.HostAddress {
-	a := types.HostAddress{}
-	a.AddrType = int32(readInt16(b, p, e))
-	a.Address = readData(b, p, e)
-	return a
+func readAddress(b []byte, p *int, e *binary.ByteOrder) (types.HostAddress, error) {
+	var a types.HostAddress
+	at, err := readInt16(b, p, e)
+	if err != nil {
+		return a, err
+	}
+	a.AddrType = int32(at)
+	a.Address, err = readData(b, p, e)
+	return a, err
 }
 
-func readAuthDataEntry(b []byte, p *int, e *binary.ByteOrder) types.AuthorizationDataEntry {
-	a := types.AuthorizationDataEntry{}
-	a.ADType = int32(readInt16(b, p, e))
-	a.ADData = readData(b, p, e)
-	return a
+func readAuthDataEntry(b []byte, p *int, e *binary.ByteOrder) (types.AuthorizationDataEntry, error) {
+	var a types.AuthorizationDataEntry
+	at, err := readInt16(b, p, e)
+	if err != nil {
+		return a, err
+	}
+	a.ADType = int32(at)
+	a.ADData, err = readData(b, p, e)
+	return a, err
 }
 
 // Read bytes representing a timestamp.
-func readTimestamp(b []byte, p *int, e *binary.ByteOrder) time.Time {
-	return time.Unix(int64(readInt32(b, p, e)), 0)
+func readTimestamp(b []byte, p *int, e *binary.ByteOrder) (time.Time, error) {
+	v, err := readInt32(b, p, e)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Unix(int64(v), 0), nil
 }
 
 // Read bytes representing an eight bit integer.
-func readInt8(b []byte, p *int, e *binary.ByteOrder) (i int8) {
-	buf := bytes.NewBuffer(b[*p : *p+1])
-	binary.Read(buf, *e, &i)
+func readInt8(b []byte, p *int, e *binary.ByteOrder) (int8, error) {
+	if *p+1 > len(b) {
+		return 0, fmt.Errorf("ccache: short read at offset %d (need 1 byte)", *p)
+	}
+	var i int8
+	binary.Read(bytes.NewBuffer(b[*p:*p+1]), *e, &i)
 	*p++
-	return
+	return i, nil
 }
 
 // Read bytes representing a sixteen bit integer.
-func readInt16(b []byte, p *int, e *binary.ByteOrder) (i int16) {
-	buf := bytes.NewBuffer(b[*p : *p+2])
-	binary.Read(buf, *e, &i)
+func readInt16(b []byte, p *int, e *binary.ByteOrder) (int16, error) {
+	if *p+2 > len(b) {
+		return 0, fmt.Errorf("ccache: short read at offset %d (need 2 bytes)", *p)
+	}
+	var i int16
+	binary.Read(bytes.NewBuffer(b[*p:*p+2]), *e, &i)
 	*p += 2
-	return
+	return i, nil
 }
 
 // Read bytes representing a thirty two bit integer.
-func readInt32(b []byte, p *int, e *binary.ByteOrder) (i int32) {
-	buf := bytes.NewBuffer(b[*p : *p+4])
-	binary.Read(buf, *e, &i)
+func readInt32(b []byte, p *int, e *binary.ByteOrder) (int32, error) {
+	if *p+4 > len(b) {
+		return 0, fmt.Errorf("ccache: short read at offset %d (need 4 bytes)", *p)
+	}
+	var i int32
+	binary.Read(bytes.NewBuffer(b[*p:*p+4]), *e, &i)
 	*p += 4
-	return
+	return i, nil
 }
 
-func readBytes(b []byte, p *int, s int, e *binary.ByteOrder) []byte {
-	buf := bytes.NewBuffer(b[*p : *p+s])
+func readBytes(b []byte, p *int, s int, e *binary.ByteOrder) ([]byte, error) {
+	if s < 0 {
+		return nil, fmt.Errorf("ccache: negative read length %d", s)
+	}
+	if *p+s > len(b) {
+		return nil, fmt.Errorf("ccache: short read at offset %d (need %d bytes, have %d)", *p, s, len(b)-*p)
+	}
 	r := make([]byte, s)
-	binary.Read(buf, *e, &r)
+	copy(r, b[*p:*p+s])
 	*p += s
-	return r
+	return r, nil
 }
 
 func isNativeEndianLittle() bool {
