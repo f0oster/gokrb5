@@ -23,7 +23,7 @@ func VerifyAPREQ(APReq *messages.APReq, s *Settings) (bool, *credentials.Credent
 
 	// Check for replay
 	rc := GetReplayCache(s.MaxClockSkew())
-	if rc.IsReplay(APReq.Ticket.SName, APReq.Authenticator) {
+	if rc.IsReplay(APReq.Ticket.SName, APReq.Authenticator, APReq.EncryptedAuthenticator.Cipher) {
 		return false, creds,
 			messages.NewKRBError(APReq.Ticket.SName, APReq.Ticket.Realm, errorcode.KRB_AP_ERR_REPEAT, "replay detected")
 	}

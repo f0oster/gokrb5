@@ -2,24 +2,42 @@
 package service
 
 import (
-	"github.com/f0oster/gokrb5/types"
+	"crypto/sha256"
 	"sync"
 	"time"
+
+	"github.com/f0oster/gokrb5/types"
 )
 
 // Replay cache is required as specified in RFC 4120 section 3.2.3
 
-// Cache for tickets received from clients keyed by fully qualified client name. Used to track replay of tickets.
+// Cache for tickets received from clients keyed by fully qualified
+// client principal name and realm. Used to track replay of tickets.
 type Cache struct {
-	entries map[string]clientEntries
-	mux     sync.RWMutex
+	entries map[clientKey]clientEntries
+	mux     sync.Mutex
+}
+
+// clientKey identifies a client uniquely within the replay cache.
+// Including the realm prevents same-name principals in different realms
+// from colliding.
+type clientKey struct {
+	cname  string
+	crealm string
 }
 
 // clientEntries holds entries of client details sent to the service.
 type clientEntries struct {
-	replayMap map[time.Time]replayCacheEntry
-	seqNumber int64
-	subKey    types.EncryptionKey
+	replayMap map[entryKey]replayCacheEntry
+}
+
+// entryKey identifies a single authenticator within a client's entries.
+// The contentHash distinguishes two distinct authenticators that share
+// a (cname, crealm, ctime+cusec) tuple by including a hash of the
+// encrypted authenticator bytes.
+type entryKey struct {
+	ct          time.Time
+	contentHash [sha256.Size]byte
 }
 
 // Cache entry tracking client time values of tickets sent to the service.
@@ -29,74 +47,36 @@ type replayCacheEntry struct {
 	cTime         time.Time // This combines the ticket's CTime and Cusec
 }
 
-func (c *Cache) getClientEntries(cname types.PrincipalName) (clientEntries, bool) {
-	c.mux.RLock()
-	defer c.mux.RUnlock()
-	ce, ok := c.entries[cname.PrincipalNameString()]
-	return ce, ok
-}
+// Instance of the ServiceCache used as a process-wide singleton.
+var (
+	replayCache *Cache
+	once        sync.Once
+)
 
-func (c *Cache) getClientEntry(cname types.PrincipalName, t time.Time) (replayCacheEntry, bool) {
-	if ce, ok := c.getClientEntries(cname); ok {
-		c.mux.RLock()
-		defer c.mux.RUnlock()
-		if e, ok := ce.replayMap[t]; ok {
-			return e, true
+// NewCache creates a Cache and starts a background goroutine that
+// periodically purges entries older than d.
+func NewCache(d time.Duration) *Cache {
+	c := &Cache{entries: make(map[clientKey]clientEntries)}
+	go func() {
+		for {
+			time.Sleep(d)
+			c.ClearOldEntries(d)
 		}
-	}
-	return replayCacheEntry{}, false
+	}()
+	return c
 }
 
-// Instance of the ServiceCache. This needs to be a singleton.
-var replayCache Cache
-var once sync.Once
-
-// GetReplayCache returns a pointer to the Cache singleton.
+// GetReplayCache returns a pointer to the process-wide Cache singleton.
 func GetReplayCache(d time.Duration) *Cache {
-	// Create a singleton of the ReplayCache and start a background thread to regularly clean out old entries
 	once.Do(func() {
-		replayCache = Cache{
-			entries: make(map[string]clientEntries),
-		}
-		go func() {
-			for {
-				// TODO consider using a context here.
-				time.Sleep(d)
-				replayCache.ClearOldEntries(d)
-			}
-		}()
+		replayCache = NewCache(d)
 	})
-	return &replayCache
+	return replayCache
 }
 
-// AddEntry adds an entry to the Cache.
-func (c *Cache) AddEntry(sname types.PrincipalName, a types.Authenticator) {
-	ct := a.CTime.Add(time.Duration(a.Cusec) * time.Microsecond)
-	if ce, ok := c.getClientEntries(a.CName); ok {
-		c.mux.Lock()
-		defer c.mux.Unlock()
-		ce.replayMap[ct] = replayCacheEntry{
-			presentedTime: time.Now().UTC(),
-			sName:         sname,
-			cTime:         ct,
-		}
-		ce.seqNumber = a.SeqNumber
-		ce.subKey = a.SubKey
-	} else {
-		c.mux.Lock()
-		defer c.mux.Unlock()
-		c.entries[a.CName.PrincipalNameString()] = clientEntries{
-			replayMap: map[time.Time]replayCacheEntry{
-				ct: {
-					presentedTime: time.Now().UTC(),
-					sName:         sname,
-					cTime:         ct,
-				},
-			},
-			seqNumber: a.SeqNumber,
-			subKey:    a.SubKey,
-		}
-	}
+// keyOf returns the realm-aware map key for an authenticator.
+func keyOf(a types.Authenticator) clientKey {
+	return clientKey{cname: a.CName.PrincipalNameString(), crealm: a.CRealm}
 }
 
 // ClearOldEntries clears entries from the Cache that are older than the duration provided.
@@ -115,14 +95,36 @@ func (c *Cache) ClearOldEntries(d time.Duration) {
 	}
 }
 
-// IsReplay tests if the Authenticator provided is a replay within the duration defined. If this is not a replay add the entry to the cache for tracking.
-func (c *Cache) IsReplay(sname types.PrincipalName, a types.Authenticator) bool {
+// IsReplay tests whether the authenticator has been seen before. The
+// match keys on client identity, server name, ticket timestamp, and a
+// SHA-256 hash of the encrypted authenticator bytes; two distinct
+// authenticators with matching timestamps differ on the ciphertext
+// hash and so do not collide. The check and the add happen under a
+// single lock so concurrent callers presenting the same authenticator
+// see exactly one non-replay outcome.
+func (c *Cache) IsReplay(sname types.PrincipalName, a types.Authenticator, ciphertext []byte) bool {
+	hash := sha256.Sum256(ciphertext)
+	c.mux.Lock()
+	defer c.mux.Unlock()
 	ct := a.CTime.Add(time.Duration(a.Cusec) * time.Microsecond)
-	if e, ok := c.getClientEntry(a.CName, ct); ok {
-		if e.sName.Equal(sname) {
+	k := keyOf(a)
+	ek := entryKey{ct: ct, contentHash: hash}
+	if ce, ok := c.entries[k]; ok {
+		if e, ok := ce.replayMap[ek]; ok && e.sName.Equal(sname) {
 			return true
 		}
 	}
-	c.AddEntry(sname, a)
+	entry := replayCacheEntry{
+		presentedTime: time.Now().UTC(),
+		sName:         sname,
+		cTime:         ct,
+	}
+	if ce, ok := c.entries[k]; ok {
+		ce.replayMap[ek] = entry
+		return false
+	}
+	c.entries[k] = clientEntries{
+		replayMap: map[entryKey]replayCacheEntry{ek: entry},
+	}
 	return false
 }
