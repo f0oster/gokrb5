@@ -56,7 +56,22 @@ func (cl *Client) ASExchange(realm string, ASReq messages.ASReq, referral int) (
 				if referral > 5 {
 					return messages.ASRep{}, krberror.Errorf(err, krberror.KRBMsgError, "maximum number of client referrals exceeded")
 				}
+				cl.Log("AS-REQ referral: from-realm=%q crealm=%q realm=%q sname=%v edata=%x", ASReq.ReqBody.Realm, e.CRealm, e.Realm, e.SName.NameString, e.EData)
 				referral++
+				ASReq.ReqBody.Realm = e.CRealm
+				if len(ASReq.ReqBody.SName.NameString) >= 2 && ASReq.ReqBody.SName.NameString[0] == "krbtgt" {
+					ASReq.ReqBody.SName.NameString = []string{"krbtgt", e.CRealm}
+				}
+				// PA-ENC-TIMESTAMP from the previous realm was encrypted under
+				// that realm's key salt; drop it so the recursive call redoes
+				// preauth fresh against the new realm.
+				filtered := ASReq.PAData[:0]
+				for _, pa := range ASReq.PAData {
+					if pa.PADataType != patype.PA_ENC_TIMESTAMP {
+						filtered = append(filtered, pa)
+					}
+				}
+				ASReq.PAData = filtered
 				return cl.ASExchange(e.CRealm, ASReq, referral)
 			default:
 				return messages.ASRep{}, krberror.Errorf(err, krberror.KDCError, "AS Exchange Error: kerberos error response from KDC")
