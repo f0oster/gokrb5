@@ -3,6 +3,7 @@ package gssapi
 import (
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/f0oster/gokrb5/crypto"
 	"github.com/f0oster/gokrb5/iana/keyusage"
@@ -37,6 +38,12 @@ import (
 // AP-REP subkey is in use. Incoming tokens are verified with the key
 // indicated by their own flag bit. Acceptor-side contexts are not
 // supported.
+//
+// Per RFC 2743 §1.1.3, Wrap/MakeSignature may run concurrently with
+// Unwrap/VerifySignature on the same context. Same-direction concurrency
+// is serialised internally on independent send and receive mutexes, so
+// the two directions never block each other. Configuration fields must
+// not be modified after the first protect operation.
 type SecurityContext struct {
 	// SessionKey is the session key from the service ticket. Required.
 	SessionKey types.EncryptionKey
@@ -73,7 +80,10 @@ type SecurityContext struct {
 	// statuses are reported unless StrictSequence is also set.
 	SequenceDetect bool
 
-	sendSeq        uint64
+	sendMu  sync.Mutex
+	sendSeq uint64
+
+	recvMu         sync.Mutex
 	recvState      *seqState
 	lastRecvStatus SeqStatus
 }
@@ -100,17 +110,29 @@ func NewInitiatorContext(sessionKey, authSubkey, apRepSubkey types.EncryptionKey
 
 // SendSeq returns the next sequence number that Wrap or MakeSignature
 // will place in an outgoing token. Exposed for tests and diagnostics.
-func (c *SecurityContext) SendSeq() uint64 { return c.sendSeq }
+func (c *SecurityContext) SendSeq() uint64 {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	return c.sendSeq
+}
 
 // NextRecvSeq returns the sequence number the sliding window currently
 // expects next from the peer. Exposed for tests and diagnostics.
-func (c *SecurityContext) NextRecvSeq() uint64 { return c.recvState.nextExpected() }
+func (c *SecurityContext) NextRecvSeq() uint64 {
+	c.recvMu.Lock()
+	defer c.recvMu.Unlock()
+	return c.recvState.nextExpected()
+}
 
 // LastRecvStatus returns the SeqStatus produced by the most recent
 // Unwrap or VerifySignature call. Useful for callers that want to log
 // or act on non-fatal supplementary statuses without enabling
 // StrictSequence.
-func (c *SecurityContext) LastRecvStatus() SeqStatus { return c.lastRecvStatus }
+func (c *SecurityContext) LastRecvStatus() SeqStatus {
+	c.recvMu.Lock()
+	defer c.recvMu.Unlock()
+	return c.lastRecvStatus
+}
 
 // activeKey returns the key currently used for outgoing per-message
 // tokens, honouring the precedence APRepSubkey > AuthenticatorSubkey >
@@ -206,6 +228,9 @@ func (c *SecurityContext) recvSignUsage() uint32 {
 // when true it is encrypted per RFC 4121 §4.2.4 (see wrapToken.go for
 // the sealed format details).
 func (c *SecurityContext) Wrap(plaintext []byte) ([]byte, error) {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+
 	key := c.activeKey()
 	encType, err := crypto.GetEtype(key.KeyType)
 	if err != nil {
@@ -213,6 +238,7 @@ func (c *SecurityContext) Wrap(plaintext []byte) ([]byte, error) {
 	}
 
 	flags := c.outgoingFlags(0x00)
+	var wt *WrapToken
 	if c.Confidential {
 		flags |= SealedFlag
 		// EC=0 for AES enctypes. Per RFC 4121 §4.2.3/§4.2.4 the
@@ -221,7 +247,7 @@ func (c *SecurityContext) Wrap(plaintext []byte) ([]byte, error) {
 		// length, so no filler is needed. MIT krb5, Heimdal, and
 		// Windows SSPI all emit EC=0 here and their receivers
 		// enforce it.
-		wt := &WrapToken{
+		wt = &WrapToken{
 			Flags:     flags,
 			EC:        0,
 			RRC:       0,
@@ -231,22 +257,24 @@ func (c *SecurityContext) Wrap(plaintext []byte) ([]byte, error) {
 		if err := wt.SealPayload(key, c.sendSealUsage()); err != nil {
 			return nil, fmt.Errorf("seal wrap token: %w", err)
 		}
-		c.sendSeq++
-		return wt.Marshal()
+	} else {
+		wt = &WrapToken{
+			Flags:     flags,
+			EC:        uint16(encType.GetHMACBitLength() / 8),
+			RRC:       0,
+			SndSeqNum: c.sendSeq,
+			Payload:   plaintext,
+		}
+		if err := wt.SetCheckSum(key, c.sendSealUsage()); err != nil {
+			return nil, fmt.Errorf("sign wrap token: %w", err)
+		}
 	}
-
-	wt := &WrapToken{
-		Flags:     flags,
-		EC:        uint16(encType.GetHMACBitLength() / 8),
-		RRC:       0,
-		SndSeqNum: c.sendSeq,
-		Payload:   plaintext,
-	}
-	if err := wt.SetCheckSum(key, c.sendSealUsage()); err != nil {
-		return nil, fmt.Errorf("sign wrap token: %w", err)
+	b, err := wt.Marshal()
+	if err != nil {
+		return nil, err
 	}
 	c.sendSeq++
-	return wt.Marshal()
+	return b, nil
 }
 
 // Unwrap parses an incoming WrapToken, verifies its checksum (or
@@ -294,6 +322,9 @@ func (c *SecurityContext) Unwrap(token []byte) ([]byte, error) {
 // carried in the token; the peer must already have it to call
 // VerifySignature.
 func (c *SecurityContext) MakeSignature(msg []byte) ([]byte, error) {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+
 	mt := &MICToken{
 		Flags:     c.outgoingMICFlags(),
 		SndSeqNum: c.sendSeq,
@@ -302,8 +333,12 @@ func (c *SecurityContext) MakeSignature(msg []byte) ([]byte, error) {
 	if err := mt.SetChecksum(c.activeKey(), c.sendSignUsage()); err != nil {
 		return nil, fmt.Errorf("sign MIC token: %w", err)
 	}
+	b, err := mt.Marshal()
+	if err != nil {
+		return nil, err
+	}
 	c.sendSeq++
-	return mt.Marshal()
+	return b, nil
 }
 
 // VerifySignature verifies a detached MICToken over msg. The token's

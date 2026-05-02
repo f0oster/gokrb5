@@ -2,6 +2,8 @@ package gssapi
 
 import (
 	"encoding/binary"
+	"slices"
+	"sync"
 	"testing"
 
 	"github.com/f0oster/gokrb5/iana/keyusage"
@@ -451,4 +453,128 @@ func TestSecurityContext_AES256SHA384RoundTrip(t *testing.T) {
 	recovered, err := sealedWT.OpenSealed(key, keyusage.GSSAPI_INITIATOR_SEAL)
 	assert.NoError(t, err)
 	assert.Equal(t, []byte("sealed rfc 8009 payload"), recovered)
+}
+
+// TestSecurityContext_ConcurrentWrap_AllocatesUniqueSeq exercises the
+// send-side mutex. N goroutines each call Wrap once; the produced tokens
+// must carry a contiguous, unique 0..N-1 set of sequence numbers.
+func TestSecurityContext_ConcurrentWrap_AllocatesUniqueSeq(t *testing.T) {
+	t.Parallel()
+	const N = 64
+	ctx := newInitiator(0, 0)
+
+	tokens := make([][]byte, N)
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func(i int) {
+			defer wg.Done()
+			tok, err := ctx.Wrap([]byte("payload"))
+			if err != nil {
+				t.Errorf("Wrap %d: %v", i, err)
+				return
+			}
+			tokens[i] = tok
+		}(i)
+	}
+	wg.Wait()
+
+	seqs := make([]uint64, 0, N)
+	for i, tok := range tokens {
+		if tok == nil {
+			t.Fatalf("token %d nil", i)
+		}
+		wt := &WrapToken{}
+		if err := wt.Unmarshal(tok, false); err != nil {
+			t.Fatalf("unmarshal %d: %v", i, err)
+		}
+		seqs = append(seqs, wt.SndSeqNum)
+	}
+	slices.Sort(seqs)
+	for i := 0; i < N; i++ {
+		assert.Equal(t, uint64(i), seqs[i], "seq %d", i)
+	}
+	assert.Equal(t, uint64(N), ctx.SendSeq())
+}
+
+// TestSecurityContext_ConcurrentWrapUnwrap_DirectionsIndependent exercises
+// the RFC 2743 §1.1.3 contract: protect operations in opposite directions
+// on a single context must not interfere. A sender goroutine drives Wrap
+// while a receiver goroutine consumes acceptor-side tokens through Unwrap.
+func TestSecurityContext_ConcurrentWrapUnwrap_DirectionsIndependent(t *testing.T) {
+	t.Parallel()
+	const N = 64
+	key := getSessionKey()
+	ctx := newInitiator(0, 0)
+
+	prebuilt := make([][]byte, N)
+	for i := 0; i < N; i++ {
+		prebuilt[i] = acceptorWrapToken(t, key, uint64(i), []byte("payload"), false)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < N; i++ {
+			if _, err := ctx.Wrap([]byte("send")); err != nil {
+				t.Errorf("Wrap %d: %v", i, err)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < N; i++ {
+			if _, err := ctx.Unwrap(prebuilt[i]); err != nil {
+				t.Errorf("Unwrap %d: %v", i, err)
+				return
+			}
+		}
+	}()
+	wg.Wait()
+
+	assert.Equal(t, uint64(N), ctx.SendSeq())
+	assert.Equal(t, uint64(N), ctx.NextRecvSeq())
+}
+
+// TestSecurityContext_ConcurrentMakeSignature_AllocatesUniqueSeq is the
+// MIC-token counterpart to ConcurrentWrap. Same invariant: every produced
+// MIC carries a unique sequence number.
+func TestSecurityContext_ConcurrentMakeSignature_AllocatesUniqueSeq(t *testing.T) {
+	t.Parallel()
+	const N = 32
+	ctx := newInitiator(0, 0)
+
+	mics := make([][]byte, N)
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func(i int) {
+			defer wg.Done()
+			m, err := ctx.MakeSignature([]byte("msg"))
+			if err != nil {
+				t.Errorf("MakeSignature %d: %v", i, err)
+				return
+			}
+			mics[i] = m
+		}(i)
+	}
+	wg.Wait()
+
+	seen := make(map[uint64]struct{}, N)
+	for i, m := range mics {
+		if m == nil {
+			t.Fatalf("mic %d nil", i)
+		}
+		mt := &MICToken{}
+		if err := mt.Unmarshal(m, false); err != nil {
+			t.Fatalf("unmarshal %d: %v", i, err)
+		}
+		if _, dup := seen[mt.SndSeqNum]; dup {
+			t.Fatalf("duplicate seq %d", mt.SndSeqNum)
+		}
+		seen[mt.SndSeqNum] = struct{}{}
+	}
+	assert.Len(t, seen, N)
 }
