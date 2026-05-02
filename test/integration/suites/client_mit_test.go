@@ -386,6 +386,8 @@ func TestClient_Enctypes_MIT(t *testing.T) {
 			cfg.LibDefaults.DefaultTktEnctypeIDs = []int32{id}
 			cfg.LibDefaults.DefaultTGSEnctypes = []string{et}
 			cfg.LibDefaults.DefaultTGSEnctypeIDs = []int32{id}
+			cfg.LibDefaults.PermittedEnctypes = []string{et}
+			cfg.LibDefaults.PermittedEnctypeIDs = []int32{id}
 
 			cl := client.NewWithPassword("preauth_user", kdc.Realm(), framework.MITUserPassword, cfg)
 			defer cl.Destroy()
