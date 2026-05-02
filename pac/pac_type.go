@@ -25,6 +25,11 @@ const (
 	infoTypePACDeviceClaimsInfo    uint32 = 15
 )
 
+// maxPACInfoBuffers caps the number of info buffers PACType.Unmarshal
+// will allocate. Matches the count of buffer types defined in [MS-PAC]
+// §2.4.
+const maxPACInfoBuffers = 14
+
 // PACType implements: https://msdn.microsoft.com/en-us/library/cc237950.aspx
 type PACType struct {
 	CBuffers           uint32
@@ -62,6 +67,9 @@ func (pac *PACType) Unmarshal(b []byte) (err error) {
 	if err != nil {
 		return
 	}
+	if pac.CBuffers > maxPACInfoBuffers {
+		return fmt.Errorf("PAC info buffer count %d exceeds maximum %d", pac.CBuffers, maxPACInfoBuffers)
+	}
 	pac.Version, err = r.Uint32()
 	if err != nil {
 		return
@@ -88,9 +96,14 @@ func (pac *PACType) Unmarshal(b []byte) (err error) {
 // ProcessPACInfoBuffers processes the PAC Info Buffers.
 // https://msdn.microsoft.com/en-us/library/cc237954.aspx
 func (pac *PACType) ProcessPACInfoBuffers(key types.EncryptionKey, l *log.Logger) error {
+	dataLen := uint64(len(pac.Data))
 	for _, buf := range pac.Buffers {
+		end := buf.Offset + uint64(buf.CBBufferSize)
+		if end < buf.Offset || end > dataLen {
+			return fmt.Errorf("PAC info buffer offset %d size %d exceeds data length %d", buf.Offset, buf.CBBufferSize, dataLen)
+		}
 		p := make([]byte, buf.CBBufferSize, buf.CBBufferSize)
-		copy(p, pac.Data[int(buf.Offset):int(buf.Offset)+int(buf.CBBufferSize)])
+		copy(p, pac.Data[buf.Offset:end])
 		switch buf.ULType {
 		case infoTypeKerbValidationInfo:
 			if pac.KerbValidationInfo != nil {
