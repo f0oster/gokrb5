@@ -32,6 +32,9 @@ type Client struct {
 
 // NewWithPassword creates a new client from a password credential.
 // Set the realm to empty string to use the default realm from config.
+// username may be a plain principal name ("alice") or a UPN-style
+// name ("alice@REALM"); use the UPN form when the KDC is expected to
+// resolve the home realm via cross-realm referral.
 func NewWithPassword(username, realm, password string, krb5conf *config.Config, settings ...func(*Settings)) *Client {
 	creds := credentials.New(username, realm)
 	return &Client{
@@ -46,6 +49,9 @@ func NewWithPassword(username, realm, password string, krb5conf *config.Config, 
 }
 
 // NewWithKeytab creates a new client from a keytab credential.
+// username may be a plain principal name ("alice") or a UPN-style
+// name ("alice@REALM"); use the UPN form when the KDC is expected to
+// resolve the home realm via cross-realm referral.
 func NewWithKeytab(username, realm string, kt *keytab.Keytab, krb5conf *config.Config, settings ...func(*Settings)) *Client {
 	creds := credentials.New(username, realm)
 	return &Client{

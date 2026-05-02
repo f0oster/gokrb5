@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/gob"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/go-uuid"
@@ -70,17 +71,30 @@ type ADCredentials struct {
 	LogonServer         string
 }
 
-// New creates a new Credentials instance.
+// New creates a new Credentials instance. username may be a plain
+// principal name ("alice") for KRB_NT_PRINCIPAL, or a UPN-style name
+// ("alice@REALM") for KRB_NT_ENTERPRISE (RFC 6806 §6). Use the UPN
+// form when the KDC is expected to resolve the home realm via
+// cross-realm referral.
 func New(username string, realm string) *Credentials {
 	uid, err := uuid.GenerateUUID()
 	if err != nil {
 		uid = "00unique-sess-ions-uuid-unavailable0"
 	}
+	var cname types.PrincipalName
+	if strings.Contains(username, "@") {
+		cname = types.PrincipalName{
+			NameType:   nametype.KRB_NT_ENTERPRISE,
+			NameString: []string{username},
+		}
+	} else {
+		cname = types.NewPrincipalName(nametype.KRB_NT_PRINCIPAL, username)
+	}
 	return &Credentials{
 		username:        username,
 		displayName:     username,
 		realm:           realm,
-		cname:           types.NewPrincipalName(nametype.KRB_NT_PRINCIPAL, username),
+		cname:           cname,
 		keytab:          keytab.New(),
 		attributes:      make(map[string]interface{}),
 		groupMembership: make(map[string]bool),
