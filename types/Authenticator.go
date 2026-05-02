@@ -56,7 +56,9 @@ func (a *Authenticator) GenerateSeqNumberAndSubKey(keyType int32, keySize int) e
 	a.SeqNumber = seq.Int64() & 0x3fffffff
 	//Generate subkey value
 	sk := make([]byte, keySize, keySize)
-	rand.Read(sk)
+	if _, err := rand.Read(sk); err != nil {
+		return err
+	}
 	a.SubKey = EncryptionKey{
 		KeyType:  keyType,
 		KeyValue: sk,
