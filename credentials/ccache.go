@@ -73,6 +73,9 @@ func LoadCCache(cpath string) (*CCache, error) {
 
 // Unmarshal a byte slice of credential cache data into CCache type.
 func (c *CCache) Unmarshal(b []byte) error {
+	if len(b) < 2 {
+		return errors.New("ccache too short")
+	}
 	p := 0
 	//The first byte of the file always has the value 5
 	if int8(b[p]) != 5 {
