@@ -157,6 +157,54 @@ func TestVerifyAPREQ_KRB_AP_ERR_BADMATCH(t *testing.T) {
 	}
 }
 
+func TestVerifyAPREQ_KRB_AP_ERR_BADMATCH_CRealm(t *testing.T) {
+	t.Parallel()
+	cl := getClient()
+	sname := types.PrincipalName{
+		NameType:   nametype.KRB_NT_PRINCIPAL,
+		NameString: []string{"HTTP", "host.test.gokrb5"},
+	}
+	b, _ := hex.DecodeString(testdata.HTTP_KEYTAB)
+	kt := keytab.New()
+	kt.Unmarshal(b)
+	st := time.Now().UTC()
+	tkt, sessionKey, err := messages.NewTicket(cl.Credentials.CName(), cl.Credentials.Domain(),
+		sname, "TEST.GOKRB5",
+		types.NewKrbFlags(),
+		kt,
+		18,
+		1,
+		st,
+		st,
+		st.Add(time.Duration(24)*time.Hour),
+		st.Add(time.Duration(48)*time.Hour),
+	)
+	if err != nil {
+		t.Fatalf("Error getting test ticket: %v", err)
+	}
+	a := newTestAuthenticator(*cl.Credentials)
+	a.CRealm = "OTHER.GOKRB5"
+	APReq, err := messages.NewAPReq(
+		tkt,
+		sessionKey,
+		a,
+	)
+	if err != nil {
+		t.Fatalf("Error getting test AP_REQ: %v", err)
+	}
+	h, _ := types.GetHostAddress("127.0.0.1:1234")
+	s := NewSettings(kt, ClientAddress(h))
+	ok, _, err := VerifyAPREQ(&APReq, s)
+	if ok || err == nil {
+		t.Fatal("Validation of AP_REQ passed when authenticator CRealm differed from ticket CRealm")
+	}
+	if _, ok := err.(messages.KRBError); ok {
+		assert.Equal(t, errorcode.KRB_AP_ERR_BADMATCH, err.(messages.KRBError).ErrorCode, "Error code not as expected")
+	} else {
+		t.Fatalf("Error is not a KRBError: %v", err)
+	}
+}
+
 func TestVerifyAPREQ_LargeClockSkew(t *testing.T) {
 	t.Parallel()
 	cl := getClient()

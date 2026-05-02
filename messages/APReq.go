@@ -189,6 +189,11 @@ func (a *APReq) Verify(kt *keytab.Keytab, d time.Duration, cAddr types.HostAddre
 		return false, NewKRBError(a.Ticket.SName, a.Ticket.Realm, errorcode.KRB_AP_ERR_BADMATCH, "CName in Authenticator does not match that in service ticket")
 	}
 
+	// Check CRealm in authenticator is the same as that in the ticket (RFC 4120 §3.2.3)
+	if a.Authenticator.CRealm != a.Ticket.DecryptedEncPart.CRealm {
+		return false, NewKRBError(a.Ticket.SName, a.Ticket.Realm, errorcode.KRB_AP_ERR_BADMATCH, "CRealm in Authenticator does not match that in service ticket")
+	}
+
 	// Check the clock skew between the client and the service server
 	ct := a.Authenticator.CTime.Add(time.Duration(a.Authenticator.Cusec) * time.Microsecond)
 	t := time.Now().UTC()

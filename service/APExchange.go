@@ -28,7 +28,10 @@ func VerifyAPREQ(APReq *messages.APReq, s *Settings) (bool, *credentials.Credent
 			messages.NewKRBError(APReq.Ticket.SName, APReq.Ticket.Realm, errorcode.KRB_AP_ERR_REPEAT, "replay detected")
 	}
 
-	c := credentials.NewFromPrincipalName(APReq.Authenticator.CName, APReq.Authenticator.CRealm)
+	// Build credentials from the ticket's identity. APReq.Verify has confirmed
+	// that Authenticator.CName/CRealm match the ticket, so either is correct;
+	// the ticket-side fields are the authoritative source.
+	c := credentials.NewFromPrincipalName(APReq.Ticket.DecryptedEncPart.CName, APReq.Ticket.DecryptedEncPart.CRealm)
 	creds = c
 	creds.SetAuthTime(time.Now().UTC())
 	creds.SetAuthenticated(true)
