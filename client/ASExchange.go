@@ -106,9 +106,16 @@ func setPAData(cl *Client, krberr *messages.KRBError, ASReq *messages.ASReq) err
 		if krberr == nil {
 			// This is not in response to an error from the KDC. It is preemptive or renewal
 			// There is no KRB Error that tells us the etype to use
+			permitted := cl.Config.LibDefaults.PermittedEnctypeIDs
 			etn := cl.settings.preAuthEType.Load() // Use the etype that may have previously been negotiated
+			if etn != 0 && !etypePermitted(etn, permitted) {
+				etn = 0
+			}
 			if etn == 0 {
 				etn = int32(cl.Config.LibDefaults.PreferredPreauthTypes[0]) // Resort to config
+			}
+			if !etypePermitted(etn, permitted) {
+				return krberror.NewErrorf(krberror.EncryptingError, "preferred pre-auth etype %d is not permitted by client policy", etn)
 			}
 			et, err = crypto.GetEtype(etn)
 			if err != nil {
