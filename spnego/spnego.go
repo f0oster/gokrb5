@@ -223,3 +223,17 @@ func (s *SPNEGOToken) ResponseToken() []byte {
 	}
 	return s.NegTokenInit.ResponseToken()
 }
+
+// SecurityContext returns the acceptor SecurityContext built by Verify
+// on a mutual-auth SPNEGO/Kerberos token. Returns nil when no acceptor
+// context is available (NegTokenResp tokens, AP-REQ without mutual auth,
+// or non-Kerberos mech tokens).
+func (s *SPNEGOToken) SecurityContext() *gssapi.SecurityContext {
+	if !s.Init {
+		return nil
+	}
+	if mt, ok := s.NegTokenInit.mechToken.(*KRB5Token); ok {
+		return mt.SecurityContext()
+	}
+	return nil
+}

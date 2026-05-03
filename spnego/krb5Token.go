@@ -217,6 +217,23 @@ func (m *KRB5Token) Context() context.Context {
 	return m.context
 }
 
+// SecurityContext returns an acceptor SecurityContext built from the
+// keys and seq numbers established by Verify on a mutual-auth AP-REQ.
+// Returns nil for AP-REQ tokens without mutual auth (no AcceptorSubkey),
+// for AP-REP tokens, or for KRBError tokens.
+func (m *KRB5Token) SecurityContext() *gssapi.SecurityContext {
+	if !m.IsAPReq() || m.AcceptorSubkey.KeyValue == nil {
+		return nil
+	}
+	return gssapi.NewAcceptorContext(
+		m.APReq.Ticket.DecryptedEncPart.Key,
+		m.APReq.Authenticator.SubKey,
+		m.AcceptorSubkey,
+		uint64(m.AcceptorSeqNumber),
+		uint64(m.APReq.Authenticator.SeqNumber),
+	)
+}
+
 // buildAPRep constructs the AP-REP for an already-verified AP-REQ that
 // requested mutual authentication. It populates m.APRep, m.AcceptorSubkey,
 // m.AcceptorSeqNumber, and m.responseToken (the GSS MechToken bytes).

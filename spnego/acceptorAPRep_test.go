@@ -63,6 +63,132 @@ func TestAcceptCompletedResponseHeader_NoMutualAuth(t *testing.T) {
 	assert.Equal(t, spnegoNegTokenRespKRBAcceptCompleted, h, "nil response token uses the static accept-completed constant")
 }
 
+func TestKRB5Token_SecurityContext(t *testing.T) {
+	t.Parallel()
+	sessionKey := types.EncryptionKey{
+		KeyType:  17,
+		KeyValue: []byte("0123456789abcdef"),
+	}
+	authSubkey := types.EncryptionKey{
+		KeyType:  17,
+		KeyValue: []byte("authsubkey5678ab"),
+	}
+	tt, _ := time.Parse(testdata.TEST_TIME_FORMAT, testdata.TEST_TIME)
+
+	// Construct a KRB5Token in the shape Verify leaves it after a
+	// successful mutual-auth AP-REQ: ticket session key, initiator's
+	// authenticator subkey + seq, and acceptor subkey + seq populated by
+	// buildAPRep.
+	tok := &KRB5Token{
+		tokID: []byte{0x01, 0x00}, // AP-REQ
+		APReq: messages.APReq{
+			Ticket: messages.Ticket{
+				DecryptedEncPart: messages.EncTicketPart{Key: sessionKey},
+			},
+			Authenticator: types.Authenticator{
+				CTime:     tt,
+				Cusec:     123456,
+				SubKey:    authSubkey,
+				SeqNumber: 42,
+			},
+		},
+	}
+	if err := tok.buildAPRep(); err != nil {
+		t.Fatalf("buildAPRep: %v", err)
+	}
+
+	sc := tok.SecurityContext()
+	if sc == nil {
+		t.Fatal("SecurityContext returned nil for mutual-auth AP-REQ")
+	}
+	assert.False(t, sc.IsInitiator)
+	assert.Equal(t, uint64(tok.AcceptorSeqNumber), sc.SendSeq())
+	assert.Equal(t, uint64(42), sc.NextRecvSeq())
+
+	// Pair with an initiator context built from the same key material and
+	// exchange tokens both directions.
+	initiator := gssapi.NewInitiatorContext(
+		sessionKey,
+		authSubkey,
+		tok.AcceptorSubkey,
+		42,                            // initiator's send seed = Authenticator.SeqNumber
+		uint64(tok.AcceptorSeqNumber), // initiator's recv anchor = EncAPRepPart.SequenceNumber
+	)
+
+	plain := []byte("from acceptor via SecurityContext()")
+	wrapped, err := sc.Wrap(plain)
+	if err != nil {
+		t.Fatalf("acceptor Wrap: %v", err)
+	}
+	got, err := initiator.Unwrap(wrapped)
+	if err != nil {
+		t.Fatalf("initiator Unwrap: %v", err)
+	}
+	assert.Equal(t, plain, got)
+
+	reply := []byte("from initiator")
+	wrapped, err = initiator.Wrap(reply)
+	if err != nil {
+		t.Fatalf("initiator Wrap: %v", err)
+	}
+	got, err = sc.Unwrap(wrapped)
+	if err != nil {
+		t.Fatalf("acceptor Unwrap: %v", err)
+	}
+	assert.Equal(t, reply, got)
+}
+
+func TestKRB5Token_SecurityContext_NilWithoutMutualAuth(t *testing.T) {
+	t.Parallel()
+	tok := &KRB5Token{
+		tokID: []byte{0x01, 0x00}, // AP-REQ, but buildAPRep never called
+	}
+	assert.Nil(t, tok.SecurityContext(), "no AcceptorSubkey, no SecurityContext")
+}
+
+func TestKRB5Token_SecurityContext_NilForNonAPReq(t *testing.T) {
+	t.Parallel()
+	tok := &KRB5Token{
+		tokID:          []byte{0x02, 0x00}, // AP-REP, not AP-REQ
+		AcceptorSubkey: types.EncryptionKey{KeyType: 17, KeyValue: []byte("0123456789abcdef")},
+	}
+	assert.Nil(t, tok.SecurityContext(), "AP-REP token type yields no acceptor context")
+}
+
+func TestSPNEGOToken_SecurityContext(t *testing.T) {
+	t.Parallel()
+	// Resp-side tokens never produce an acceptor context.
+	s := &SPNEGOToken{Resp: true}
+	assert.Nil(t, s.SecurityContext())
+
+	// Init token without a mechToken returns nil.
+	s = &SPNEGOToken{Init: true}
+	assert.Nil(t, s.SecurityContext())
+
+	// Init token wrapping a verified mutual-auth AP-REQ KRB5Token delegates.
+	sessionKey := types.EncryptionKey{KeyType: 17, KeyValue: []byte("0123456789abcdef")}
+	tt, _ := time.Parse(testdata.TEST_TIME_FORMAT, testdata.TEST_TIME)
+	krb5 := &KRB5Token{
+		tokID: []byte{0x01, 0x00},
+		APReq: messages.APReq{
+			Ticket:        messages.Ticket{DecryptedEncPart: messages.EncTicketPart{Key: sessionKey}},
+			Authenticator: types.Authenticator{CTime: tt, Cusec: 1, SeqNumber: 7},
+		},
+	}
+	if err := krb5.buildAPRep(); err != nil {
+		t.Fatalf("buildAPRep: %v", err)
+	}
+	s = &SPNEGOToken{
+		Init:         true,
+		NegTokenInit: NegTokenInit{mechToken: krb5},
+	}
+	sc := s.SecurityContext()
+	if sc == nil {
+		t.Fatal("SPNEGOToken.SecurityContext returned nil for valid mutual-auth token")
+	}
+	assert.False(t, sc.IsInitiator)
+}
+
 func TestAcceptCompletedResponseHeader_MutualAuth(t *testing.T) {
 	t.Parallel()
 	payload := []byte{0xde, 0xad, 0xbe, 0xef}

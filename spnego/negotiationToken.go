@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/jcmturner/gofork/encoding/asn1"
 	"github.com/f0oster/gokrb5/client"
 	"github.com/f0oster/gokrb5/gssapi"
 	"github.com/f0oster/gokrb5/messages"
 	"github.com/f0oster/gokrb5/service"
 	"github.com/f0oster/gokrb5/types"
+	"github.com/jcmturner/gofork/encoding/asn1"
 )
 
 // https://msdn.microsoft.com/en-us/library/ms995330.aspx
@@ -25,6 +25,12 @@ const (
 
 // NegState is a type to indicate the SPNEGO negotiation state.
 type NegState int
+
+// TODO: consider implementing NegTokenInit2 ([MS-SPNG] §2.2.1, §3.3.5.1)?
+// Microsoft SPNEGO extension for server-initiated negotiation.
+// Useful when an acceptor must send the first context token, e.g. a broker
+// greets clients with its available mechanisms before the client binds.
+// In standard RFC 4178 SPNEGO, the initiator sends negTokenInit first.
 
 // NegTokenInit implements Negotiation Token of type Init.
 type NegTokenInit struct {
