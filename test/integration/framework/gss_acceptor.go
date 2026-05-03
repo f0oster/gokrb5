@@ -2,36 +2,25 @@ package framework
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"sync"
 
-	"github.com/jcmturner/gofork/encoding/asn1"
 	"github.com/f0oster/gokrb5/credentials"
 	"github.com/f0oster/gokrb5/gssapi"
 	"github.com/f0oster/gokrb5/keytab"
 	"github.com/f0oster/gokrb5/spnego"
 )
 
-// GSSAcceptor is a tiny in-process TCP server that performs an SPNEGO/Kerberos
-// GSS handshake using kt and the SPN it was provisioned for, then exchanges
-// one Wrap message in each direction. On a successful handshake the acceptor
-// sends back a Wrap'd reply produced by ReplyFunc.
-//
-// Wire format on each connection (length is 4-byte big-endian):
-//
-//  1. [len][AP-REQ SPNEGO NegTokenInit]
-//  2. [len][AP-REP SPNEGO NegTokenResp]
-//  3. [len][Wrap'd client message]
-//  4. [len][Wrap'd reply payload]
-//
-// Per-connection failures are pushed to Errors() and the connection is
-// closed.
+// GSSAcceptor is an in-process TCP server that performs a
+// SPNEGO/Kerberos GSS handshake on each connection and then exchanges
+// one Wrap message in each direction, with the reply payload produced
+// by ReplyFunc. Wire framing is gssapi.LengthPrefix4. Per-connection
+// failures are pushed to Errors() and the connection is closed.
 type GSSAcceptor struct {
 	listener net.Listener
-	spnego   *spnego.SPNEGO
+	acceptor *spnego.Acceptor
 	reply    ReplyFunc
 	errs     chan error
 
@@ -40,10 +29,9 @@ type GSSAcceptor struct {
 	wg     sync.WaitGroup
 }
 
-// ReplyFunc produces the cleartext payload the acceptor wraps and sends
-// back to the initiator after a successful handshake. It receives the
-// verified client credentials so authorization-aware servers can branch
-// on group membership, principal name, etc.
+// ReplyFunc returns the cleartext payload the acceptor wraps and sends
+// back to the initiator. The verified client credentials let
+// authorization-aware servers vary the reply by principal or group.
 type ReplyFunc func(creds *credentials.Credentials) []byte
 
 // AuthenticatedReply is the default ReplyFunc payload returned for any
@@ -56,10 +44,8 @@ func DefaultReply(*credentials.Credentials) []byte {
 }
 
 // StartGSSAcceptor binds a localhost TCP listener and spawns an accept
-// loop that handles each connection by performing the GSS handshake.
-// reply produces the per-message payload sent after a successful
-// handshake; pass DefaultReply for the standard "authenticated"
-// response.
+// loop. reply produces the per-message payload sent after a successful
+// handshake; passing nil uses DefaultReply.
 func StartGSSAcceptor(kt *keytab.Keytab, reply ReplyFunc) (*GSSAcceptor, error) {
 	if reply == nil {
 		reply = DefaultReply
@@ -70,7 +56,7 @@ func StartGSSAcceptor(kt *keytab.Keytab, reply ReplyFunc) (*GSSAcceptor, error) 
 	}
 	a := &GSSAcceptor{
 		listener: listener,
-		spnego:   spnego.SPNEGOService(kt),
+		acceptor: spnego.NewAcceptor(kt),
 		reply:    reply,
 		errs:     make(chan error, 16),
 	}
@@ -120,64 +106,17 @@ func (a *GSSAcceptor) serve() {
 
 func (a *GSSAcceptor) handle(conn net.Conn) {
 	defer conn.Close()
-
-	apreqBytes, err := ReadFramed(conn)
+	sess, err := a.acceptor.AcceptOn(conn, gssapi.LengthPrefix4)
 	if err != nil {
-		a.pushErr(fmt.Errorf("read AP-REQ: %w", err))
+		a.pushErr(fmt.Errorf("accept: %w", err))
 		return
 	}
-
-	var spt spnego.SPNEGOToken
-	if err := spt.Unmarshal(apreqBytes); err != nil {
-		a.pushErr(fmt.Errorf("unmarshal SPNEGO init: %w", err))
+	if _, err := sess.ReadMsg(); err != nil {
+		a.pushErr(fmt.Errorf("read client wrap: %w", err))
 		return
 	}
-
-	authed, _, status := a.spnego.AcceptSecContext(&spt)
-	if !authed || status.Code != gssapi.StatusComplete {
-		a.pushErr(fmt.Errorf("AcceptSecContext: code=%v message=%q", status.Code, status.Message))
-		return
-	}
-
-	sc := spt.SecurityContext()
-	if sc == nil {
-		a.pushErr(errors.New("SecurityContext nil after successful AcceptSecContext"))
-		return
-	}
-
-	resp := spnego.NegTokenResp{
-		NegState:      asn1.Enumerated(spnego.NegStateAcceptCompleted),
-		SupportedMech: gssapi.OIDKRB5.OID(),
-		ResponseToken: spt.ResponseToken(),
-	}
-	respBytes, err := resp.Marshal()
-	if err != nil {
-		a.pushErr(fmt.Errorf("marshal NegTokenResp: %w", err))
-		return
-	}
-	if err := WriteFramed(conn, respBytes); err != nil {
-		a.pushErr(fmt.Errorf("send AP-REP: %w", err))
-		return
-	}
-
-	clientMsg, err := ReadFramed(conn)
-	if err != nil {
-		a.pushErr(fmt.Errorf("read client Wrap: %w", err))
-		return
-	}
-	if _, err := sc.Unwrap(clientMsg); err != nil {
-		a.pushErr(fmt.Errorf("unwrap client message: %w", err))
-		return
-	}
-
-	replyPayload := a.reply(spt.Credentials())
-	reply, err := sc.Wrap(replyPayload)
-	if err != nil {
-		a.pushErr(fmt.Errorf("wrap reply: %w", err))
-		return
-	}
-	if err := WriteFramed(conn, reply); err != nil {
-		a.pushErr(fmt.Errorf("send Wrap reply: %w", err))
+	if err := sess.WriteMsg(a.reply(sess.Credentials)); err != nil {
+		a.pushErr(fmt.Errorf("write reply: %w", err))
 		return
 	}
 }

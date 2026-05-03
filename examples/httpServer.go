@@ -14,7 +14,6 @@ import (
 	"github.com/gorilla/sessions"
 	"github.com/jcmturner/goidentity/v6"
 	"github.com/f0oster/gokrb5/keytab"
-	"github.com/f0oster/gokrb5/service"
 	"github.com/f0oster/gokrb5/spnego"
 	"github.com/f0oster/gokrb5/test/testdata"
 )
@@ -38,7 +37,7 @@ func main() {
 
 	// Set up handler mappings wrapping in the SPNEGOKRB5Authenticate handler wrapper
 	mux := http.NewServeMux()
-	mux.Handle("/", spnego.SPNEGOKRB5Authenticate(th, kt, service.Logger(l), service.SessionManager(NewSessionMgr("gokrb5"))))
+	mux.Handle("/", spnego.SPNEGOKRB5Authenticate(th, spnego.NewAcceptor(kt), spnego.WithHTTPLogger(l), spnego.WithSessionManager(NewSessionMgr("gokrb5"))))
 
 	// Start up the web server
 	log.Fatal(http.ListenAndServe(port, mux))

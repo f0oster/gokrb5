@@ -7,11 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jcmturner/gofork/encoding/asn1"
 	"github.com/f0oster/gokrb5/credentials"
 	"github.com/f0oster/gokrb5/gssapi"
-	"github.com/f0oster/gokrb5/iana/flags"
-	"github.com/f0oster/gokrb5/spnego"
 	"github.com/f0oster/gokrb5/test/integration/framework"
 )
 
@@ -163,32 +160,21 @@ func runAcceptorRoundTrip(t *testing.T, kdc framework.KDC, username, password, s
 		t.Fatalf("login as %s: %v", username, err)
 	}
 
-	tkt, sessionKey, err := cl.GetServiceTicket(spn)
+	init, err := gssapi.NewInitiator(cl, spn,
+		gssapi.WithMutualAuth(),
+		gssapi.WithConfidentiality(),
+	)
 	if err != nil {
-		t.Fatalf("get service ticket for %s: %v", spn, err)
+		t.Fatalf("NewInitiator: %v", err)
 	}
 
-	mt, err := spnego.NewKRB5TokenAPREQWithBindings(cl, tkt, sessionKey,
-		[]int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf, gssapi.ContextFlagMutual},
-		[]int{flags.APOptionMutualRequired},
-		nil, nil)
+	mechBytes, err := init.Step(nil)
 	if err != nil {
-		t.Fatalf("build AP-REQ KRB5Token: %v", err)
+		t.Fatalf("build AP-REQ mech token: %v", err)
 	}
-	mtBytes, err := mt.Marshal()
+	sptBytes, err := framework.WrapSPNEGOInit(mechBytes)
 	if err != nil {
-		t.Fatalf("marshal AP-REQ MechToken: %v", err)
-	}
-	spt := &spnego.SPNEGOToken{
-		Init: true,
-		NegTokenInit: spnego.NegTokenInit{
-			MechTypes:      []asn1.ObjectIdentifier{gssapi.OIDKRB5.OID()},
-			MechTokenBytes: mtBytes,
-		},
-	}
-	sptBytes, err := spt.Marshal()
-	if err != nil {
-		t.Fatalf("marshal SPNEGOToken: %v", err)
+		t.Fatalf("wrap SPNEGO init: %v", err)
 	}
 
 	conn, err := net.Dial("tcp", acceptor.Addr())
@@ -208,34 +194,17 @@ func runAcceptorRoundTrip(t *testing.T, kdc framework.KDC, username, password, s
 	if err != nil {
 		fatalWithAcceptor("receive AP-REP: %v", err)
 	}
-	var negResp spnego.NegTokenResp
-	if err := negResp.Unmarshal(respBytes); err != nil {
-		t.Fatalf("unmarshal NegTokenResp: %v", err)
+	apRepBytes, err := framework.UnwrapSPNEGOResp(respBytes)
+	if err != nil {
+		t.Fatalf("unwrap SPNEGO response: %v", err)
 	}
-	if negResp.ResponseToken == nil {
-		t.Fatalf("acceptor's NegTokenResp lacked ResponseToken (mutual auth not honoured)")
+	if _, err := init.Step(apRepBytes); err != nil {
+		t.Fatalf("verify AP-REP: %v", err)
 	}
-
-	var apRepTok spnego.KRB5Token
-	if err := apRepTok.Unmarshal(negResp.ResponseToken); err != nil {
-		t.Fatalf("unmarshal AP-REP MechToken: %v", err)
+	initCtx, err := init.SecurityContext()
+	if err != nil {
+		t.Fatalf("SecurityContext: %v", err)
 	}
-	apRepTok.SetAPRepVerification(mt.Authenticator, sessionKey)
-	ok, status := apRepTok.Verify()
-	if !ok {
-		t.Fatalf("verify AP-REP: code=%v message=%q", status.Code, status.Message)
-	}
-	if apRepTok.EncAPRepPart == nil {
-		t.Fatalf("verified AP-REP did not populate EncAPRepPart")
-	}
-
-	initCtx := gssapi.NewInitiatorContext(
-		sessionKey,
-		mt.Authenticator.SubKey,
-		apRepTok.EncAPRepPart.Subkey,
-		uint64(mt.Authenticator.SeqNumber),
-		uint64(apRepTok.EncAPRepPart.SequenceNumber),
-	)
 
 	pingTok, err := initCtx.Wrap([]byte("ping"))
 	if err != nil {

@@ -14,10 +14,11 @@ import (
 	"github.com/f0oster/gokrb5/types"
 )
 
+// Hex-encoded GSS-API KRB5 mech token IDs (RFC 4121 §4.1).
 const (
-	tokIDAPReq  = "0100"
-	tokIDAPRep  = "0200"
-	tokIDKRBErr = "0300"
+	TokIDAPReq  = "0100"
+	TokIDAPRep  = "0200"
+	TokIDKRBErr = "0300"
 )
 
 type initiatorState int
@@ -124,6 +125,22 @@ func NewInitiator(cl *client.Client, spn string, opts ...InitiatorOption) (*Init
 	}, nil
 }
 
+// NewInitiatorFromTicket prepares a GSS context using a caller-supplied
+// service ticket and session key, skipping the KDC exchange.
+func NewInitiatorFromTicket(cl *client.Client, tkt messages.Ticket, sessionKey types.EncryptionKey, opts ...InitiatorOption) (*Initiator, error) {
+	var cfg initiatorConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	return &Initiator{
+		cl:         cl,
+		cfg:        cfg,
+		tkt:        tkt,
+		sessionKey: sessionKey,
+		state:      stateReady,
+	}, nil
+}
+
 // Step advances the context. On the first call input must be nil; the
 // returned bytes are the RFC 2743 §3.1 framed AP-REQ mech token. On
 // the second call (mutual auth only) input is the peer's response
@@ -201,7 +218,7 @@ func (i *Initiator) stepInitial() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal AP-REQ: %w", err)
 	}
-	wireToken, err := marshalMechToken(tokIDAPReq, apReqBytes)
+	wireToken, err := MarshalMechToken(TokIDAPReq, apReqBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -221,13 +238,16 @@ func (i *Initiator) stepReply(input []byte) ([]byte, error) {
 		return nil, errors.New("mutual auth requires a reply token")
 	}
 
-	tokID, innerBytes, err := unmarshalMechToken(input)
+	oid, tokID, innerBytes, err := UnmarshalMechToken(input)
 	if err != nil {
 		return nil, fmt.Errorf("unmarshal reply token: %w", err)
 	}
+	if !oid.Equal(OIDKRB5.OID()) {
+		return nil, fmt.Errorf("reply mech token OID is %s, want %s", oid.String(), OIDKRB5.OID().String())
+	}
 
 	switch tokID {
-	case tokIDAPRep:
+	case TokIDAPRep:
 		var apRep messages.APRep
 		if err := apRep.Unmarshal(innerBytes); err != nil {
 			return nil, fmt.Errorf("unmarshal AP-REP: %w", err)
@@ -240,7 +260,7 @@ func (i *Initiator) stepReply(input []byte) ([]byte, error) {
 		i.state = stateDone
 		return nil, nil
 
-	case tokIDKRBErr:
+	case TokIDKRBErr:
 		var krbErr messages.KRBError
 		if err := krbErr.Unmarshal(innerBytes); err != nil {
 			return nil, fmt.Errorf("unmarshal KRB-ERROR: %w", err)
@@ -265,9 +285,10 @@ func (i *Initiator) buildContext(apRepSubkey types.EncryptionKey, apRepSeq uint6
 	return ctx
 }
 
-// marshalMechToken produces the RFC 2743 §3.1 initial context token:
-// [APPLICATION 0] { OID, tokID, innerBytes }.
-func marshalMechToken(tokID string, innerBytes []byte) ([]byte, error) {
+// MarshalMechToken produces an RFC 2743 §3.1 KRB5 mech token:
+// [APPLICATION 0] { KRB5 OID, tokID, body }. tokID is hex-encoded
+// (TokIDAPReq, TokIDAPRep, TokIDKRBErr).
+func MarshalMechToken(tokID string, body []byte) ([]byte, error) {
 	oidBytes, err := asn1.Marshal(OIDKRB5.OID())
 	if err != nil {
 		return nil, fmt.Errorf("marshal KRB5 OID: %w", err)
@@ -276,27 +297,25 @@ func marshalMechToken(tokID string, innerBytes []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode token ID: %w", err)
 	}
-	b := make([]byte, 0, len(oidBytes)+len(tb)+len(innerBytes))
+	b := make([]byte, 0, len(oidBytes)+len(tb)+len(body))
 	b = append(b, oidBytes...)
 	b = append(b, tb...)
-	b = append(b, innerBytes...)
+	b = append(b, body...)
 	return asn1tools.AddASNAppTag(b, 0), nil
 }
 
-// unmarshalMechToken strips the RFC 2743 §3.1 framing and returns the
-// token ID (hex string) and the inner message bytes.
-func unmarshalMechToken(b []byte) (string, []byte, error) {
+// UnmarshalMechToken strips RFC 2743 §3.1 framing and returns the OID
+// identifying the mech, the hex-encoded tokID, and the inner message
+// body.
+func UnmarshalMechToken(b []byte) (asn1.ObjectIdentifier, string, []byte, error) {
 	var oid asn1.ObjectIdentifier
 	r, err := asn1.UnmarshalWithParams(b, &oid, fmt.Sprintf("application,explicit,tag:%v", 0))
 	if err != nil {
-		return "", nil, fmt.Errorf("unmarshal mech token OID: %w", err)
-	}
-	if !oid.Equal(OIDKRB5.OID()) {
-		return "", nil, fmt.Errorf("mech token OID is %s, want %s", oid.String(), OIDKRB5.OID().String())
+		return nil, "", nil, fmt.Errorf("unmarshal mech token OID: %w", err)
 	}
 	if len(r) < 2 {
-		return "", nil, errors.New("mech token too short after OID")
+		return nil, "", nil, errors.New("mech token too short after OID")
 	}
 	tokID := hex.EncodeToString(r[0:2])
-	return tokID, r[2:], nil
+	return oid, tokID, r[2:], nil
 }

@@ -11,7 +11,6 @@ import (
 	"github.com/f0oster/gokrb5/client"
 	"github.com/f0oster/gokrb5/config"
 	"github.com/f0oster/gokrb5/gssapi"
-	"github.com/f0oster/gokrb5/iana/flags"
 	"github.com/f0oster/gokrb5/iana/nametype"
 	"github.com/f0oster/gokrb5/keytab"
 	"github.com/f0oster/gokrb5/messages"
@@ -67,8 +66,7 @@ func newServiceTicket(t *testing.T, kt *keytab.Keytab, cl *client.Client) (messa
 	return tkt, sessionKey
 }
 
-// spnegoInit wraps the inner AP-REQ mech token in a NegTokenInit and
-// returns the marshaled SPNEGO bytes ready for spnego.Acceptor.Accept.
+// spnegoInit wraps an inner AP-REQ mech token in a marshaled NegTokenInit.
 func spnegoInit(t *testing.T, mechBytes []byte) []byte {
 	t.Helper()
 	spt := &SPNEGOToken{
@@ -91,16 +89,13 @@ func TestAcceptor_Accept(t *testing.T) {
 	kt := acceptorTestKeytab(t)
 	tkt, sessionKey := newServiceTicket(t, kt, cl)
 
-	mech, err := NewKRB5TokenAPREQ(cl, tkt, sessionKey,
-		[]int{gssapi.ContextFlagInteg, gssapi.ContextFlagMutual},
-		[]int{flags.APOptionMutualRequired},
-	)
+	init, err := gssapi.NewInitiatorFromTicket(cl, tkt, sessionKey, gssapi.WithMutualAuth())
 	if err != nil {
-		t.Fatalf("NewKRB5TokenAPREQ: %v", err)
+		t.Fatalf("NewInitiatorFromTicket: %v", err)
 	}
-	mechBytes, err := mech.Marshal()
+	mechBytes, err := init.Step(nil)
 	if err != nil {
-		t.Fatalf("marshal mech token: %v", err)
+		t.Fatalf("build AP-REQ mech token: %v", err)
 	}
 
 	acc := NewAcceptor(kt, gssapi.WithReplayCache(gssapi.NewReplayCache(time.Minute)))
@@ -138,16 +133,13 @@ func TestAcceptor_AcceptOn_RoundTrip(t *testing.T) {
 	kt := acceptorTestKeytab(t)
 	tkt, sessionKey := newServiceTicket(t, kt, cl)
 
-	mech, err := NewKRB5TokenAPREQ(cl, tkt, sessionKey,
-		[]int{gssapi.ContextFlagInteg, gssapi.ContextFlagMutual},
-		[]int{flags.APOptionMutualRequired},
-	)
+	init, err := gssapi.NewInitiatorFromTicket(cl, tkt, sessionKey, gssapi.WithMutualAuth())
 	if err != nil {
-		t.Fatalf("NewKRB5TokenAPREQ: %v", err)
+		t.Fatalf("NewInitiatorFromTicket: %v", err)
 	}
-	mechBytes, err := mech.Marshal()
+	mechBytes, err := init.Step(nil)
 	if err != nil {
-		t.Fatalf("marshal mech token: %v", err)
+		t.Fatalf("build AP-REQ mech token: %v", err)
 	}
 
 	clientConn, serverConn := net.Pipe()
@@ -186,22 +178,13 @@ func TestAcceptor_AcceptOn_RoundTrip(t *testing.T) {
 		t.Fatalf("unmarshal NegTokenResp: %v", err)
 	}
 
-	var apRepTok KRB5Token
-	if err := apRepTok.Unmarshal(resp.ResponseToken); err != nil {
-		t.Fatalf("unmarshal AP-REP mech token: %v", err)
+	if _, err := init.Step(resp.ResponseToken); err != nil {
+		t.Fatalf("AP-REP verify: %v", err)
 	}
-	apRepTok.SetAPRepVerification(mech.Authenticator, sessionKey)
-	if ok, status := apRepTok.Verify(); !ok {
-		t.Fatalf("AP-REP verify: code=%v message=%q", status.Code, status.Message)
+	clientCtx, err := init.SecurityContext()
+	if err != nil {
+		t.Fatalf("SecurityContext: %v", err)
 	}
-
-	clientCtx := gssapi.NewInitiatorContext(
-		sessionKey,
-		mech.Authenticator.SubKey,
-		apRepTok.EncAPRepPart.Subkey,
-		uint64(mech.Authenticator.SeqNumber),
-		uint64(apRepTok.EncAPRepPart.SequenceNumber),
-	)
 
 	greeting, err := clientCtx.Wrap([]byte("hello"))
 	if err != nil {

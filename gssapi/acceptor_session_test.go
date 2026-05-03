@@ -2,6 +2,7 @@ package gssapi
 
 import (
 	"encoding/hex"
+	"fmt"
 	"net"
 	"sync"
 	"testing"
@@ -166,12 +167,15 @@ func TestAcceptOn_NoMutualAuthSkipsResponse(t *testing.T) {
 // verifyAPRepFromMechToken strips the mech-token framing and verifies
 // an AP-REP against the initiator's session key and authenticator.
 func verifyAPRepFromMechToken(mechToken []byte, sessionKey types.EncryptionKey, sentAuth types.Authenticator) (*messages.EncAPRepPart, error) {
-	tokID, inner, err := unmarshalMechToken(mechToken)
+	oid, tokID, inner, err := UnmarshalMechToken(mechToken)
 	if err != nil {
 		return nil, err
 	}
-	if tokID != tokIDAPRep {
-		return nil, &mechTokenIDError{got: tokID, want: tokIDAPRep}
+	if !oid.Equal(OIDKRB5.OID()) {
+		return nil, fmt.Errorf("mech token OID is %s, want %s", oid.String(), OIDKRB5.OID().String())
+	}
+	if tokID != TokIDAPRep {
+		return nil, &mechTokenIDError{got: tokID, want: TokIDAPRep}
 	}
 	var apRep messages.APRep
 	if err := apRep.Unmarshal(inner); err != nil {

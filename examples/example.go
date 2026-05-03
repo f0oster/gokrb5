@@ -17,7 +17,6 @@ import (
 	"github.com/f0oster/gokrb5/client"
 	"github.com/f0oster/gokrb5/config"
 	"github.com/f0oster/gokrb5/keytab"
-	"github.com/f0oster/gokrb5/service"
 	"github.com/f0oster/gokrb5/spnego"
 	"github.com/f0oster/gokrb5/test/testdata"
 )
@@ -70,7 +69,7 @@ func httpServer() *httptest.Server {
 	kt := keytab.New()
 	kt.Unmarshal(b)
 	th := http.HandlerFunc(testAppHandler)
-	s := httptest.NewServer(spnego.SPNEGOKRB5Authenticate(th, kt, service.Logger(l)))
+	s := httptest.NewServer(spnego.SPNEGOKRB5Authenticate(th, spnego.NewAcceptor(kt), spnego.WithHTTPLogger(l)))
 	return s
 }
 

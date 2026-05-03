@@ -21,8 +21,8 @@ import (
 	"github.com/jcmturner/goidentity/v6"
 	"github.com/f0oster/gokrb5/client"
 	"github.com/f0oster/gokrb5/config"
+	"github.com/f0oster/gokrb5/gssapi"
 	"github.com/f0oster/gokrb5/keytab"
-	"github.com/f0oster/gokrb5/service"
 	"github.com/f0oster/gokrb5/test"
 	"github.com/f0oster/gokrb5/test/testdata"
 	"github.com/stretchr/testify/assert"
@@ -163,18 +163,20 @@ func TestService_SPNEGOKRB_ValidUser_RawKRB5Token(t *testing.T) {
 	r, _ := http.NewRequest("GET", s.URL, nil)
 
 	cl := getClient()
-	sc := SPNEGOClient(cl, "HTTP/host.test.gokrb5")
-	err := sc.AcquireCred()
-	if err != nil {
+	if err := cl.AffirmLogin(); err != nil {
 		t.Fatalf("could not acquire client credential: %v", err)
 	}
-	st, err := sc.InitSecContext()
+	init, err := gssapi.NewInitiator(cl, "HTTP/host.test.gokrb5")
 	if err != nil {
 		t.Fatalf("could not initialize context: %v", err)
 	}
+	nb, err := init.Step(nil)
+	if err != nil {
+		t.Fatalf("could not produce mech token: %v", err)
+	}
 
-	// Use the raw KRB5 context token
-	nb := st.(*SPNEGOToken).NegTokenInit.MechTokenBytes
+	// Send the raw KRB5 mech token (not SPNEGO-wrapped) — exercises
+	// the issue #347 wrap-on-receive path in readNegotiateHeader.
 	hs := "Negotiate " + base64.StdEncoding.EncodeToString(nb)
 	r.Header.Set(HTTPHeaderAuthRequest, hs)
 
@@ -340,7 +342,7 @@ func httpServerWithoutSessionManager() *httptest.Server {
 	kt := keytab.New()
 	kt.Unmarshal(b)
 	th := http.HandlerFunc(testAppHandler)
-	s := httptest.NewServer(SPNEGOKRB5Authenticate(th, kt, service.Logger(l)))
+	s := httptest.NewServer(SPNEGOKRB5Authenticate(th, NewAcceptor(kt), WithHTTPLogger(l)))
 	return s
 }
 
@@ -350,7 +352,7 @@ func httpServer() *httptest.Server {
 	kt := keytab.New()
 	kt.Unmarshal(b)
 	th := http.HandlerFunc(testAppHandler)
-	s := httptest.NewServer(SPNEGOKRB5Authenticate(th, kt, service.Logger(l), service.SessionManager(NewSessionMgr("gokrb5"))))
+	s := httptest.NewServer(SPNEGOKRB5Authenticate(th, NewAcceptor(kt), WithHTTPLogger(l), WithSessionManager(newTestSessionMgr("gokrb5"))))
 	return s
 }
 
@@ -400,22 +402,22 @@ func getClient() *client.Client {
 	return cl
 }
 
-type SessionMgr struct {
+type testSessionMgr struct {
 	skey       []byte
 	store      sessions.Store
 	cookieName string
 }
 
-func NewSessionMgr(cookieName string) SessionMgr {
+func newTestSessionMgr(cookieName string) testSessionMgr {
 	skey := []byte("thisistestsecret") // Best practice is to load this key from a secure location.
-	return SessionMgr{
+	return testSessionMgr{
 		skey:       skey,
 		store:      sessions.NewCookieStore(skey),
 		cookieName: cookieName,
 	}
 }
 
-func (smgr SessionMgr) Get(r *http.Request, k string) ([]byte, error) {
+func (smgr testSessionMgr) Get(r *http.Request, k string) ([]byte, error) {
 	s, err := smgr.store.Get(r, smgr.cookieName)
 	if err != nil {
 		return nil, err
@@ -430,7 +432,7 @@ func (smgr SessionMgr) Get(r *http.Request, k string) ([]byte, error) {
 	return b, nil
 }
 
-func (smgr SessionMgr) New(w http.ResponseWriter, r *http.Request, k string, v []byte) error {
+func (smgr testSessionMgr) New(w http.ResponseWriter, r *http.Request, k string, v []byte) error {
 	s, err := smgr.store.New(r, smgr.cookieName)
 	if err != nil {
 		return fmt.Errorf("could not get new session from session manager: %v", err)

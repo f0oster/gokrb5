@@ -43,7 +43,7 @@ func mechTokenFromAPReq(t *testing.T, apReq messages.APReq) []byte {
 	if err != nil {
 		t.Fatalf("marshal AP-REQ: %v", err)
 	}
-	tok, err := marshalMechToken(tokIDAPReq, apReqBytes)
+	tok, err := MarshalMechToken(TokIDAPReq, apReqBytes)
 	if err != nil {
 		t.Fatalf("marshal mech token: %v", err)
 	}

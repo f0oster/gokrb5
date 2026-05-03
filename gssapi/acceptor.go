@@ -153,12 +153,15 @@ type Acceptance struct {
 // *messages.KRBError; callers serializing a KRB-ERROR mech token to
 // the initiator can recover it via errors.As().
 func (a *Acceptor) Accept(mechToken []byte, opts ...AcceptOption) (*Acceptance, error) {
-	tokID, inner, err := unmarshalMechToken(mechToken)
+	oid, tokID, inner, err := UnmarshalMechToken(mechToken)
 	if err != nil {
 		return nil, fmt.Errorf("unmarshal mech token: %w", err)
 	}
-	if tokID != tokIDAPReq {
-		return nil, fmt.Errorf("unexpected mech token ID %s, want %s", tokID, tokIDAPReq)
+	if !oid.Equal(OIDKRB5.OID()) {
+		return nil, fmt.Errorf("mech token OID is %s, want %s", oid.String(), OIDKRB5.OID().String())
+	}
+	if tokID != TokIDAPReq {
+		return nil, fmt.Errorf("unexpected mech token ID %s, want %s", tokID, TokIDAPReq)
 	}
 
 	var apReq messages.APReq
@@ -196,7 +199,7 @@ func (a *Acceptor) Accept(mechToken []byte, opts ...AcceptOption) (*Acceptance, 
 		if err != nil {
 			return nil, fmt.Errorf("marshal AP-REP: %w", err)
 		}
-		responseToken, err = marshalMechToken(tokIDAPRep, repBytes)
+		responseToken, err = MarshalMechToken(TokIDAPRep, repBytes)
 		if err != nil {
 			return nil, fmt.Errorf("marshal AP-REP mech token: %w", err)
 		}
