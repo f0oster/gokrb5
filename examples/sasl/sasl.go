@@ -1,11 +1,8 @@
-//go:build lowlevel
-
 /*
-sasl_lowlevel.go demonstrates SASL/GSSAPI authentication and
-per-message protection over a raw TCP LDAP connection using the
-low-level gokrb5 APIs.
+sasl.go demonstrates SASL/GSSAPI authentication and per-message
+protection over a raw TCP LDAP connection using gssapi.Initiator.
 
-Run: go run -tags lowlevel . [flags]
+Run: go run . [flags]
 */
 package main
 
@@ -20,9 +17,6 @@ import (
 	"github.com/f0oster/gokrb5/client"
 	"github.com/f0oster/gokrb5/config"
 	"github.com/f0oster/gokrb5/gssapi"
-	"github.com/f0oster/gokrb5/iana/flags"
-	"github.com/f0oster/gokrb5/spnego"
-	"github.com/f0oster/gokrb5/types"
 )
 
 func main() {
@@ -50,7 +44,7 @@ func main() {
 		log.Fatalf("ERROR: -layer must be none, integrity, or confidentiality, got %q", *layer)
 	}
 
-	// Authenticate and acquire a TGT + service ticket.
+	// Authenticate and acquire a TGT.
 	fmt.Println("\n" + Header("Kerberos (RFC 4120)"))
 
 	krb5Conf, err := config.NewFromString(fmt.Sprintf(`
@@ -73,15 +67,19 @@ func main() {
 	defer krb5Client.Destroy()
 	fmt.Printf("[+] AS-REP: TGT for %s@%s\n", *user, *realm)
 
-	spn := "ldap/" + *server
-	tkt, sessionKey, err := krb5Client.GetServiceTicket(spn)
-	if err != nil {
-		log.Fatalf("ERROR: TGS-REQ failed: %v", err)
-	}
-	fmt.Printf("[+] TGS-REP: ticket for %s (etype %d)\n", spn, sessionKey.KeyType)
-
-	// SASL/GSSAPI bind with per-message protection.
+	// Establish a GSS context and run the SASL bind.
 	fmt.Println("\n" + Header("SASL/GSSAPI bind (RFC 4752, RFC 4121)"))
+
+	spn := "ldap/" + *server
+	initOpts := []gssapi.InitiatorOption{gssapi.WithMutualAuth()}
+	if chosenLayer == gssapi.SASLSecurityConfidential {
+		initOpts = append(initOpts, gssapi.WithConfidentiality())
+	}
+	init, err := gssapi.NewInitiator(krb5Client, spn, initOpts...)
+	if err != nil {
+		log.Fatalf("ERROR: NewInitiator: %v", err)
+	}
+	fmt.Printf("[+] TGS-REP: ticket for %s (etype %d)\n", spn, init.SessionKeyEtype())
 
 	conn, err := net.DialTimeout("tcp", *server+":389", *timeout)
 	if err != nil {
@@ -92,24 +90,13 @@ func main() {
 
 	ldap := &LDAPConn{Conn: conn, MsgID: 1}
 
-	// Build the AP-REQ with mutual auth requested.
-	gssFlags := []int{gssapi.ContextFlagInteg, gssapi.ContextFlagMutual}
-	if chosenLayer == gssapi.SASLSecurityConfidential {
-		gssFlags = append(gssFlags, gssapi.ContextFlagConf)
-	}
-	apReqToken, err := spnego.NewKRB5TokenAPREQWithBindings(
-		krb5Client, tkt, sessionKey,
-		gssFlags,
-		[]int{flags.APOptionMutualRequired},
-		nil, nil,
-	)
+	apReqToken, err := init.Step(nil)
 	if err != nil {
-		log.Fatalf("ERROR: build AP-REQ: %v", err)
+		log.Fatalf("ERROR: Step(nil): %v", err)
 	}
-	sentAuth := apReqToken.Authenticator
-	token, _ := apReqToken.Marshal()
 
 	var ctx *gssapi.SecurityContext
+	token := apReqToken
 	firstStep := true
 
 	for {
@@ -144,34 +131,17 @@ func main() {
 			continue
 		}
 
-		var krb5Token spnego.KRB5Token
-		if err := krb5Token.Unmarshal(serverCreds); err == nil && krb5Token.IsAPRep() {
-			// Verify the server's mutual auth proof and build SecurityContext.
+		// Pass the server's reply to the Initiator to verify mutual auth.
+		if !init.Done() {
 			fmt.Printf("[<] saslBindInProgress: AP-REP (%d bytes)\n", len(serverCreds))
-			krb5Token.SetAPRepVerification(sentAuth, sessionKey)
-			ok, status := krb5Token.Verify()
-			if !ok {
-				log.Fatalf("ERROR: AP-REP verify: %s", status.Message)
+			if _, err := init.Step(serverCreds); err != nil {
+				log.Fatalf("ERROR: Step(AP-REP): %v", err)
 			}
 			fmt.Println("    mutual auth verified (RFC 4120 §3.2.4)")
-
-			var apRepSubkey types.EncryptionKey
-			var apRepSeq uint64
-			if krb5Token.EncAPRepPart != nil {
-				if krb5Token.EncAPRepPart.Subkey.KeyValue != nil {
-					apRepSubkey = krb5Token.EncAPRepPart.Subkey
-					fmt.Printf("    AP-REP subkey: etype %d, %d bytes  [acceptor subkey in use]\n",
-						apRepSubkey.KeyType, len(apRepSubkey.KeyValue))
-				}
-				apRepSeq = uint64(krb5Token.EncAPRepPart.SequenceNumber)
+			ctx, err = init.SecurityContext()
+			if err != nil {
+				log.Fatalf("ERROR: SecurityContext: %v", err)
 			}
-			ctx = gssapi.NewInitiatorContext(
-				sessionKey,
-				sentAuth.SubKey,
-				apRepSubkey,
-				uint64(sentAuth.SeqNumber),
-				apRepSeq,
-			)
 			token = nil
 			continue
 		}

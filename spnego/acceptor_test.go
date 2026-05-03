@@ -66,40 +66,23 @@ func newServiceTicket(t *testing.T, kt *keytab.Keytab, cl *client.Client) (messa
 	return tkt, sessionKey
 }
 
-// spnegoInit wraps an inner AP-REQ mech token in a marshaled NegTokenInit.
-func spnegoInit(t *testing.T, mechBytes []byte) []byte {
-	t.Helper()
-	spt := &SPNEGOToken{
-		Init: true,
-		NegTokenInit: NegTokenInit{
-			MechTypes:      []asn1.ObjectIdentifier{gssapi.OIDKRB5.OID()},
-			MechTokenBytes: mechBytes,
-		},
-	}
-	out, err := spt.Marshal()
-	if err != nil {
-		t.Fatalf("marshal NegTokenInit: %v", err)
-	}
-	return out
-}
-
 func TestAcceptor_Accept(t *testing.T) {
 	t.Parallel()
 	cl := acceptorTestClient(t)
 	kt := acceptorTestKeytab(t)
 	tkt, sessionKey := newServiceTicket(t, kt, cl)
 
-	init, err := gssapi.NewInitiatorFromTicket(cl, tkt, sessionKey, gssapi.WithMutualAuth())
+	init, err := NewInitiatorFromTicket(cl, tkt, sessionKey, gssapi.WithMutualAuth())
 	if err != nil {
 		t.Fatalf("NewInitiatorFromTicket: %v", err)
 	}
-	mechBytes, err := init.Step(nil)
+	sptBytes, err := init.Step(nil)
 	if err != nil {
-		t.Fatalf("build AP-REQ mech token: %v", err)
+		t.Fatalf("build SPNEGO init: %v", err)
 	}
 
 	acc := NewAcceptor(kt, gssapi.WithReplayCache(gssapi.NewReplayCache(time.Minute)))
-	a, err := acc.Accept(spnegoInit(t, mechBytes))
+	a, err := acc.Accept(sptBytes)
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
@@ -133,13 +116,13 @@ func TestAcceptor_AcceptOn_RoundTrip(t *testing.T) {
 	kt := acceptorTestKeytab(t)
 	tkt, sessionKey := newServiceTicket(t, kt, cl)
 
-	init, err := gssapi.NewInitiatorFromTicket(cl, tkt, sessionKey, gssapi.WithMutualAuth())
+	init, err := NewInitiatorFromTicket(cl, tkt, sessionKey, gssapi.WithMutualAuth())
 	if err != nil {
 		t.Fatalf("NewInitiatorFromTicket: %v", err)
 	}
-	mechBytes, err := init.Step(nil)
+	sptBytes, err := init.Step(nil)
 	if err != nil {
-		t.Fatalf("build AP-REQ mech token: %v", err)
+		t.Fatalf("build SPNEGO init: %v", err)
 	}
 
 	clientConn, serverConn := net.Pipe()
@@ -165,7 +148,7 @@ func TestAcceptor_AcceptOn_RoundTrip(t *testing.T) {
 		serverErr = sess.WriteMsg(append([]byte("echo:"), msg...))
 	}()
 
-	if err := gssapi.LengthPrefix4.WriteFrame(clientConn, spnegoInit(t, mechBytes)); err != nil {
+	if err := gssapi.LengthPrefix4.WriteFrame(clientConn, sptBytes); err != nil {
 		t.Fatalf("write SPNEGO init frame: %v", err)
 	}
 
@@ -173,13 +156,8 @@ func TestAcceptor_AcceptOn_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read SPNEGO response frame: %v", err)
 	}
-	var resp NegTokenResp
-	if err := resp.Unmarshal(respFrame); err != nil {
-		t.Fatalf("unmarshal NegTokenResp: %v", err)
-	}
-
-	if _, err := init.Step(resp.ResponseToken); err != nil {
-		t.Fatalf("AP-REP verify: %v", err)
+	if _, err := init.Step(respFrame); err != nil {
+		t.Fatalf("SPNEGO response verify: %v", err)
 	}
 	clientCtx, err := init.SecurityContext()
 	if err != nil {

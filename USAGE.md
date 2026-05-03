@@ -3,55 +3,55 @@
 ### Configuration
 The gokrb5 libraries use the same krb5.conf configuration file format as MIT Kerberos,
 described [here](https://web.mit.edu/kerberos/krb5-latest/doc/admin/conf_files/krb5_conf.html).
-Config instances can be created from a file path or from a string,
-io.Reader, or bufio.Scanner:
+Config instances can be created by loading from a file path or by passing a string, io.Reader or bufio.Scanner to the
+relevant method:
 ```go
 import "github.com/f0oster/gokrb5/config"
 cfg, err := config.Load("/path/to/config/file")
-cfg, err := config.NewFromString(krb5Str) // string must include newlines
+cfg, err := config.NewFromString(krb5Str) //String must have appropriate newline separations
 cfg, err := config.NewFromReader(reader)
 cfg, err := config.NewFromScanner(scanner)
 ```
 
 ### Keytab files
-Keytabs can be read from a file or from a slice of bytes:
+Standard keytab files can be read from a file or from a slice of bytes:
 ```go
 import "github.com/f0oster/gokrb5/keytab"
-kt, err := keytab.Load("/path/to/file.keytab")
-kt, err := keytab.Parse(b)
+ktFromFile, err := keytab.Load("/path/to/file.keytab")
+ktFromBytes, err := keytab.Parse(b)
 ```
 
 ---
 
 ### Kerberos Client
-**Create** a client instance with either a password or a keytab. A
-configuration must also be passed. Optional settings come from the
-functions defined in `client/settings.go`:
+**Create** a client instance with either a password or a keytab.
+A configuration must also be passed. Optional additional settings can also be provided.
 ```go
 import "github.com/f0oster/gokrb5/client"
 cl := client.NewWithPassword("username", "REALM.COM", "password", cfg)
 cl := client.NewWithKeytab("username", "REALM.COM", kt, cfg)
 ```
+Optional settings are provided using the functions defined in `client/settings.go`.
 
 **Login**:
 ```go
 err := cl.Login()
 ```
-Kerberos Ticket Granting Tickets (TGT) are automatically renewed
-unless the client was created from a CCache.
+Kerberos Ticket Granting Tickets (TGT) will be automatically renewed unless the client was created from a CCache.
 
-A client can be **destroyed**:
+A client can be **destroyed** with the following method:
 ```go
 cl.Destroy()
 ```
 
-#### Authenticate to a service
+#### Authenticate to a Service
 
 ##### HTTP SPNEGO
-Build the HTTP request, then create a SPNEGO client and use it to
-issue the request via the same methods as on an `http.Client`. Passing
-nil for the HTTP client uses `http.DefaultClient`. Passing an empty
-SPN derives the SPN from the request URL.
+Create the HTTP request object and then create an SPNEGO client and use it to process the request with methods that
+are the same as on a HTTP client.
+If nil is passed as the HTTP client when creating the SPNEGO client the http.DefaultClient is used.
+When creating the SPNEGO client pass the Service Principal Name (SPN) or auto generate the SPN from the request
+object by passing a null string "".
 ```go
 import "github.com/f0oster/gokrb5/spnego"
 r, _ := http.NewRequest("GET", "http://host.test.gokrb5/index.html", nil)
@@ -59,111 +59,35 @@ spnegoCl := spnego.NewClient(cl, nil, "")
 resp, err := spnegoCl.Do(r)
 ```
 
-##### Programmatic GSS-API context (RFC 2743)
-For non-HTTP application protocols, `gssapi.Initiator` drives the full
-client-side handshake: it acquires the service ticket, builds the
-AP-REQ, optionally verifies the mutual-auth AP-REP, and produces a
-`SecurityContext` for per-message Wrap, Unwrap, and MIC operations.
+##### Generic Kerberos Client
+For non-HTTP application protocols, `gssapi.NewInitiator` drives the client side: it acquires the service ticket,
+builds the AP-REQ, optionally verifies a mutual-auth AP-REP, and yields a SecurityContext for per-message
+Wrap/Unwrap.
 ```go
 import "github.com/f0oster/gokrb5/gssapi"
-
-init, err := gssapi.NewInitiator(cl, "ldap/dc.example.com",
-    gssapi.WithMutualAuth(),
-    gssapi.WithConfidentiality(),
-)
-if err != nil {
-    return err
+init, err := gssapi.NewInitiator(cl, spn, gssapi.WithMutualAuth())
+mechBytes, err := init.Step(nil)
+// send mechBytes, receive reply...
+if _, err := init.Step(reply); err != nil {
+    // verify AP-REP failed
 }
-
-apReq, err := init.Step(nil)               // first call: AP-REQ wire bytes
-if err != nil {
-    return err
-}
-// send apReq, receive reply...
-
-if _, err := init.Step(reply); err != nil { // verify AP-REP (mutual auth)
-    return err
-}
-
-ctx, err := init.SecurityContext()
-if err != nil {
-    return err
-}
-
-sealed, err := ctx.Wrap([]byte("hello"))
-plaintext, err := ctx.Unwrap(serverToken)
+ctx, _ := init.SecurityContext()
+sealed, _ := ctx.Wrap([]byte("hello"))
 ```
-Initiator-only flows omit `WithMutualAuth`; the context is established
-after the first `Step`. `SecurityContext` is safe for concurrent send
-and receive (RFC 2743 §1.1.3). Other options:
-`WithChannelBindings(cb)`, `WithDelegation(krbCredDER)`,
-`WithStrictSequence`.
+Initiator-only flows omit `WithMutualAuth`; the context is established after the first `Step`. Other options:
+`WithChannelBindings(cb)`, `WithDelegation(krbCredDER)`, `WithConfidentiality()`, `WithStrictSequence()`.
 
-##### TLS channel bindings (RFC 5929)
-`tls-server-end-point` channel bindings hash the leaf certificate into
-the authenticator checksum.
-```go
-cb, err := gssapi.NewTLSChannelBindingsFromState(&tlsState)
-if err != nil {
-    return err
-}
-init, err := gssapi.NewInitiator(cl, spn,
-    gssapi.WithMutualAuth(),
-    gssapi.WithChannelBindings(cb),
-)
-```
+For SPNEGO-framed transports (NegTokenInit / NegTokenResp on the wire), `spnego.NewInitiator` wraps `gssapi.NewInitiator`
+with the same options and produces / consumes the SPNEGO framing.
 
-##### SASL/GSSAPI security layer (RFC 4752)
-After the GSS handshake, SASL/GSSAPI mechanisms exchange a wrapped
-4-byte security-layer token. `gssapi.ParseSASLServerToken` and
-`gssapi.BuildSASLClientToken` round-trip this exchange against the
-established `SecurityContext`.
-```go
-offer, err := gssapi.ParseSASLServerToken(ctx, serverToken)
-if err != nil {
-    return err
-}
-if !offer.SupportsLayer(gssapi.SASLSecurityNone) {
-    return fmt.Errorf("server does not offer no-layer auth")
-}
+The `examples/go-ldapv3/` directory has a complete working LDAP+TLS+CBT+SASL/GSSAPI client.
 
-clientToken, err := gssapi.BuildSASLClientToken(ctx, gssapi.SASLClientResponse{
-    ChosenLayer: gssapi.SASLSecurityNone,
-    AuthzID:     "",
-})
-```
-`SASLSecurityIntegrity` and `SASLSecurityConfidential` set the
-corresponding flag on `ctx`; subsequent `Wrap`/`Unwrap` calls then
-enforce the chosen layer.
+#### Changing a Client Password
+This feature uses the Microsoft Kerberos Password Change protocol (RFC 3244).
+This is implemented in Microsoft Active Directory and in MIT krb5kdc as of version 1.7.
+Typically the kpasswd server listens on port 464.
 
-##### Low-level AP-REQ construction
-`gssapi.NewInitiatorFromTicket` builds the AP-REQ from a ticket the
-caller has already obtained without driving another KDC exchange:
-```go
-import (
-    "github.com/f0oster/gokrb5/gssapi"
-    "github.com/f0oster/gokrb5/messages"
-)
-
-tkt, sessionKey, err := cl.GetServiceTicket("HTTP/host.test.gokrb5")
-if err != nil {
-    return err
-}
-init, err := gssapi.NewInitiatorFromTicket(cl, tkt, sessionKey, gssapi.WithMutualAuth())
-if err != nil {
-    return err
-}
-mechBytes, err := init.Step(nil) // RFC 2743 §3.1 framed AP-REQ
-```
-`gssapi.MarshalMechToken(tokID, body)` and
-`gssapi.UnmarshalMechToken(b)` expose the RFC 2743 §3.1 framing
-([APPLICATION 0] OID + tokID + body) for callers that need to manipulate
-mech tokens directly.
-
-#### Changing a client password
-Implements the Microsoft Kerberos Password Change protocol (RFC 3244),
-supported by Active Directory and by MIT krb5kdc 1.7+. The kpasswd
-server typically listens on port 464.
+Below is example code for how to use this feature:
 ```go
 cfg, err := config.Load("/path/to/config/file")
 if err != nil {
@@ -183,181 +107,117 @@ if !ok {
     panic("failed to change password")
 }
 ```
-The client krb5.conf must define either `kpasswd_server` or
-`admin_server` in the relevant `[realms]` section:
+
+The client kerberos config (krb5.conf) will need to have either the kpasswd_server or admin_server defined in the
+relevant [realms] section. For example:
 ```
 REALM.COM = {
   kdc = 127.0.0.1:88
   kpasswd_server = 127.0.0.1:464
   default_domain = realm.com
-}
+ }
 ```
 See https://web.mit.edu/kerberos/krb5-latest/doc/admin/conf_files/krb5_conf.html#realms for more information.
 
-#### Client diagnostics
-The client's `Diagnostics` method checks that the enctypes required by
-the client's krb5 config are available in its keytab and that KDCs can
-be resolved for the client's realm. The error returned describes any
-failed checks; the configuration details are written to the supplied
-`io.Writer`.
+#### Client Diagnostics
+In the event of issues the configuration of a client can be investigated with its `Diagnostics` method.
+This will check that the required enctypes defined in the client's krb5 config are available in its keytab.
+It will also check that KDCs can be resolved for the client's REALM.
+The error returned will contain details of any failed checks.
+The configuration details of the client will be written to the `io.Writer` provided.
 
 ---
 
-### Kerberised service
+### Kerberised Service
 
-#### SPNEGO/Kerberos HTTP service
-Construct a `*spnego.Acceptor` with the service keytab and any
-GSS-level options, then pass it to `spnego.SPNEGOKRB5Authenticate`
-along with HTTP-level options:
+#### SPNEGO/Kerberos HTTP Service
+A HTTP handler wrapper can be used to implement Kerberos SPNEGO authentication for web services.
+First construct a `*spnego.Acceptor` with the service keytab and any GSS-level options (keytab principal,
+permitted enctypes, etc.); then pass the Acceptor and any HTTP-level options to `SPNEGOKRB5Authenticate`.
 ```go
-acc := spnego.NewAcceptor(kt,
-    gssapi.WithKeytabPrincipal("HTTP/host.example"),
-    gssapi.WithPermittedEnctypes([]int32{etypeID.AES256_CTS_HMAC_SHA1_96}),
-)
+acc := spnego.NewAcceptor(kt)
 
 l := log.New(os.Stderr, "GOKRB5 Service: ", log.Ldate|log.Ltime|log.Lshortfile)
 h := http.HandlerFunc(apphandler)
 http.Handle("/", spnego.SPNEGOKRB5Authenticate(h, acc, spnego.WithHTTPLogger(l)))
 ```
+Active Directory often maps the SPN to a user account whose keytab uses that account's
+sAMAccountName rather than the SPN; pass it explicitly to the Acceptor:
+```go
+acc := spnego.NewAcceptor(kt, gssapi.WithKeytabPrincipal("sysHTTP"))
+```
 
-##### Session management
-Most authenticated web applications maintain a session rather than
-re-authenticating on every request. Pass a session manager into the
-middleware:
+##### Session Management
+For efficiency reasons it is not desirable to authenticate on every call to a web service.
+Therefore most authenticated web applications implement some form of session with the user.
+Such sessions can be supported by passing a "session manager" into the `SPNEGOKRB5Authenticate` wrapper handler.
+In order to not demand a specific session manager solution, the session manager must implement a simple interface:
 ```go
 type SessionMgr interface {
     New(w http.ResponseWriter, r *http.Request, k string, v []byte) error
     Get(r *http.Request, k string) ([]byte, error)
 }
 ```
-- `New` stores a key/value pair in the session.
-- `Get` returns the value held under the key in an existing session,
-  or nil bytes / an error if there is no session.
+- New - creates a new session for the request and adds a piece of data (key/value pair) to the session
+- Get - extract from an existing session the value held within it under the key provided.
+This should return nil bytes or an error if there is no existing session.
 
+The session manager (sm) that implements this interface should then be passed to the `SPNEGOKRB5Authenticate`
+wrapper handler as below:
 ```go
-http.Handle("/", spnego.SPNEGOKRB5Authenticate(h, acc,
-    spnego.WithHTTPLogger(l),
-    spnego.WithSessionManager(sm),
-))
+http.Handle("/", spnego.SPNEGOKRB5Authenticate(h, acc, spnego.WithSessionManager(sm)))
 ```
-The `httpServer.go` source file in the examples directory shows usage
-with the gorilla web toolkit.
 
-##### Validating users and accessing user details
-On successful authentication the request's context carries a
-credentials object implementing the `goidentity.Identity` interface
-from `github.com/jcmturner/goidentity/v6`. When the KDC is Active
-Directory, the credentials' attribute map carries an `ADCredentials`
-struct (group SIDs, primary group, logon times, etc.) under
-`credentials.AttributeKeyADCredentials`:
+The `httpServer.go` source file in the examples directory shows how this can be used with the gorilla web toolkit.
+
+##### Validating Users and Accessing Users' Details
+If authentication succeeds then the request's context will have a credentials object added to it.
+This object implements the `goidentity.Identity` interface from `github.com/jcmturner/goidentity/v6`.
+If Microsoft Active Directory is used as the KDC then additional `ADCredentials` are available in the
+`credentials.Attributes` map under the key `credentials.AttributeKeyADCredentials`.
+For example the SIDs of the user's group memberships are available there for application authorization.
+
+Checking and accessing the credentials within your application:
 ```go
-import (
-    "github.com/jcmturner/goidentity/v6"
-    "github.com/f0oster/gokrb5/credentials"
-)
-
+// Get a goidentity credentials object from the request's context
 creds := goidentity.FromHTTPRequestContext(r)
 if creds == nil || !creds.Authenticated() {
     w.WriteHeader(http.StatusUnauthorized)
     fmt.Fprint(w, "Authentication failed")
     return
 }
+// Check for Active Directory attributes
 if ad, ok := creds.Attributes()[credentials.AttributeKeyADCredentials].(credentials.ADCredentials); ok {
     // ad.GroupMembershipSIDs, ad.EffectiveName, ad.PrimaryGroupID, ...
 }
 ```
-Code holding `*credentials.Credentials` directly (e.g., from a
-non-HTTP acceptor) can call `creds.GetADCredentials()` to obtain the
-struct without the attribute-map lookup.
 
-#### SPNEGO/Kerberos acceptor (non-HTTP)
-For application protocols that frame their own GSS handshake (LDAP,
-IMAP, custom TCP), drive the SPNEGO acceptor directly. `Accept`
-verifies the AP-REQ against the keytab; the `Acceptance` carries the
-marshaled NegTokenResp, the verified credentials, and a
-`SecurityContext` for per-message Wrap/Unwrap.
+#### SPNEGO/Kerberos Service (non-HTTP)
+For application protocols that frame their own GSS handshake, drive the SPNEGO acceptor directly.
+`Accept` verifies the inbound NegTokenInit; the returned `Acceptance` carries the marshaled NegTokenResp,
+the verified credentials, and a SecurityContext for per-message Wrap/Unwrap.
 ```go
 acc := spnego.NewAcceptor(kt)
-
 acceptance, err := acc.Accept(spnegoBytes)
-if err != nil {
-    return err
-}
 // send acceptance.ResponseToken back to the initiator
 ctx := acceptance.Context
 creds := acceptance.Credentials
 ```
-For raw GSS callers (no SPNEGO framing on the wire), use
-`gssapi.NewAcceptor` directly:
+For services that frame every post-auth message with a length prefix, `AcceptOn` drives the handshake
+on a connection and returns a `Session` ready for `ReadMsg` / `WriteMsg`:
 ```go
-acc := gssapi.NewAcceptor(kt)
-acceptance, err := acc.Accept(mechToken)
-// acceptance.ResponseToken is non-nil only when mutual auth was requested.
-```
-
-##### Streaming convenience: Session over a frame codec
-For framed TCP-style services that wrap every post-auth message,
-`AcceptOn` drives the handshake on a stream and returns a `*Session`
-ready for `ReadMsg` / `WriteMsg` against the established
-`SecurityContext`:
-```go
-acc := spnego.NewAcceptor(kt)
-
 sess, err := acc.AcceptOn(conn, gssapi.LengthPrefix4)
-if err != nil {
-    return err
-}
-msg, err := sess.ReadMsg()       // reads a framed Wrap'd message
-if err != nil {
-    return err
-}
-err = sess.WriteMsg(reply)       // wraps and writes a reply frame
+msg, _ := sess.ReadMsg()
+sess.WriteMsg(reply)
 ```
-`gssapi.LengthPrefix4` frames messages with a 4-byte big-endian length
-and a 16 MiB cap. Implement `gssapi.FrameCodec` for other framings.
+For raw GSS callers (no SPNEGO framing on the wire), use `gssapi.NewAcceptor` instead.
 
-##### Channel-binding verification on the acceptor side
-`gssapi.WithExpectedChannelBindings` makes `Accept` verify the
-initiator's hashed bindings against `MD5(cb.Marshal())`; mismatch
-returns `gssapi.ErrChannelBindingMismatch`.
+#### Generic Kerberised Service - Validating Client Details
+For services that handle their own AP-REQ wire framing, validate an inner mech token directly:
 ```go
-cb, _ := gssapi.NewTLSChannelBindingsFromCert(leafCert)
-
-acc := gssapi.NewAcceptor(kt)
-acceptance, err := acc.Accept(mechToken,
-    gssapi.WithExpectedChannelBindings(cb),
-)
-if errors.Is(err, gssapi.ErrChannelBindingMismatch) {
-    // initiator's bindings did not match
-}
-```
-Without this option the acceptor ignores whatever bindings the
-initiator hashed in.
-
-#### Permitted enctypes (operator policy)
-`gssapi.WithPermittedEnctypes` constrains which etypes the acceptor
-will accept on inbound tickets and authenticators. An AP-REQ
-presenting an etype outside the list is rejected before decryption.
-```go
-import (
-    "github.com/f0oster/gokrb5/iana/etypeID"
-    "github.com/f0oster/gokrb5/gssapi"
-)
-
-acc := gssapi.NewAcceptor(kt,
-    gssapi.WithPermittedEnctypes([]int32{
-        etypeID.AES256_CTS_HMAC_SHA1_96,
-        etypeID.AES128_CTS_HMAC_SHA1_96,
-    }),
-)
-```
-An empty list (the default) imposes no restriction.
-
-#### HTTP Basic auth via Kerberos
-`spnego.KRB5BasicAuthenticator` authenticates an HTTP Basic header by
-running an AS-REQ + TGS-REQ for the supplied credentials and decrypting
-the resulting service ticket against the local keytab.
-```go
-auth := spnego.NewKRB5BasicAuthenticator(headerVal, krb5Conf, clientSettings, kt, "HTTP/host.example")
-id, ok, err := auth.Authenticate()
+import "github.com/f0oster/gokrb5/gssapi"
+acc := gssapi.NewAcceptor(kt) // optional gssapi.AcceptorOption values can also be provided
+acceptance, err := acc.Accept(mechToken)
+// acceptance.Credentials carries the verified client identity
+// acceptance.ResponseToken carries the AP-REP (non-nil only when the initiator requested mutual auth)
 ```

@@ -9,6 +9,7 @@ import (
 
 	"github.com/f0oster/gokrb5/credentials"
 	"github.com/f0oster/gokrb5/gssapi"
+	"github.com/f0oster/gokrb5/spnego"
 	"github.com/f0oster/gokrb5/test/integration/framework"
 )
 
@@ -160,7 +161,7 @@ func runAcceptorRoundTrip(t *testing.T, kdc framework.KDC, username, password, s
 		t.Fatalf("login as %s: %v", username, err)
 	}
 
-	init, err := gssapi.NewInitiator(cl, spn,
+	init, err := spnego.NewInitiator(cl, spn,
 		gssapi.WithMutualAuth(),
 		gssapi.WithConfidentiality(),
 	)
@@ -168,13 +169,9 @@ func runAcceptorRoundTrip(t *testing.T, kdc framework.KDC, username, password, s
 		t.Fatalf("NewInitiator: %v", err)
 	}
 
-	mechBytes, err := init.Step(nil)
+	sptBytes, err := init.Step(nil)
 	if err != nil {
-		t.Fatalf("build AP-REQ mech token: %v", err)
-	}
-	sptBytes, err := framework.WrapSPNEGOInit(mechBytes)
-	if err != nil {
-		t.Fatalf("wrap SPNEGO init: %v", err)
+		t.Fatalf("build SPNEGO init token: %v", err)
 	}
 
 	conn, err := net.Dial("tcp", acceptor.Addr())
@@ -194,12 +191,8 @@ func runAcceptorRoundTrip(t *testing.T, kdc framework.KDC, username, password, s
 	if err != nil {
 		fatalWithAcceptor("receive AP-REP: %v", err)
 	}
-	apRepBytes, err := framework.UnwrapSPNEGOResp(respBytes)
-	if err != nil {
-		t.Fatalf("unwrap SPNEGO response: %v", err)
-	}
-	if _, err := init.Step(apRepBytes); err != nil {
-		t.Fatalf("verify AP-REP: %v", err)
+	if _, err := init.Step(respBytes); err != nil {
+		t.Fatalf("verify SPNEGO response: %v", err)
 	}
 	initCtx, err := init.SecurityContext()
 	if err != nil {

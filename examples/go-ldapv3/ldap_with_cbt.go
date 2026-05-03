@@ -1,14 +1,13 @@
-//go:build ignore
-
 /*
-ldap_with_cbt.go demonstrates GSSAPI authentication over LDAP with
-TLS channel bindings using the go-ldap/v3 library and the low-level
-gokrb5 APIs. Defaults target the public FreeIPA demo.
+ldap_with_cbt.go demonstrates GSSAPI authentication over LDAP with TLS
+channel bindings using gssapi.Initiator and the go-ldap/v3 library.
+Defaults target the public FreeIPA demo.
 
 Usage:
 
 	go run ldap_with_cbt.go
-	go run ldap_with_cbt.go -server dc.example.com -realm EXAMPLE.COM -user testuser -password secret
+	go run ldap_with_cbt.go -server dc.example.com -realm EXAMPLE.COM \
+	    -user testuser -password secret
 */
 package main
 
@@ -24,9 +23,6 @@ import (
 	"github.com/f0oster/gokrb5/client"
 	"github.com/f0oster/gokrb5/config"
 	"github.com/f0oster/gokrb5/gssapi"
-	"github.com/f0oster/gokrb5/iana/flags"
-	"github.com/f0oster/gokrb5/spnego"
-	"github.com/f0oster/gokrb5/types"
 )
 
 func main() {
@@ -38,7 +34,6 @@ func main() {
 	timeout := flag.Duration("timeout", 30*time.Second, "TCP dial timeout")
 	flag.Parse()
 
-	// Authenticate and acquire a TGT.
 	fmt.Println("\n" + header("Kerberos (RFC 4120)"))
 
 	krb5Conf, err := config.NewFromString(fmt.Sprintf(`
@@ -61,7 +56,6 @@ func main() {
 	defer krb5Client.Destroy()
 	fmt.Printf("[+] AS-REP: TGT for %s@%s\n", *user, *realm)
 
-	// Connect and upgrade to TLS, then derive the channel binding.
 	fmt.Println("\n" + header("TLS + channel bindings (RFC 5929)"))
 
 	conn, err := ldap.DialURL("ldap://"+*server+":389", ldap.DialWithDialer(&net.Dialer{Timeout: *timeout}))
@@ -79,7 +73,7 @@ func main() {
 
 	tlsState, ok := conn.TLSConnectionState()
 	if !ok {
-		log.Fatal("ERROR: TLSConnectionState unavailable; StartTLS may have failed")
+		log.Fatal("ERROR: TLSConnectionState unavailable")
 	}
 	channelBindings, err := gssapi.NewTLSChannelBindingsFromState(&tlsState)
 	if err != nil {
@@ -93,10 +87,9 @@ func main() {
 	fmt.Printf("[+] tls-server-end-point binding: %x...  (first %d bytes of leaf cert hash)\n",
 		hashPreview, len(hashPreview))
 
-	// SASL/GSSAPI bind with channel bindings.
 	fmt.Println("\n" + header("SASL/GSSAPI bind (RFC 4752, RFC 4121)"))
 
-	gssClient := &RawGSSAPIClient{
+	gssClient := &InitiatorGSSAPIClient{
 		krb5Client: krb5Client,
 		bindings:   channelBindings,
 	}
@@ -123,101 +116,58 @@ func main() {
 	}
 }
 
-// header formats a top-level section banner.
 func header(s string) string {
 	return fmt.Sprintf("=== %s ===", s)
 }
 
-// RawGSSAPIClient implements go-ldap's GSSAPIClient interface on top of
-// the raw gokrb5 APIs.
-type RawGSSAPIClient struct {
+// InitiatorGSSAPIClient implements go-ldap's GSSAPIClient interface
+// using gssapi.Initiator.
+type InitiatorGSSAPIClient struct {
 	krb5Client *client.Client
 	bindings   *gssapi.ChannelBindings
-
-	sessionKey types.EncryptionKey
-	sentAuth   types.Authenticator
+	init       *gssapi.Initiator
 	secCtx     *gssapi.SecurityContext
 }
 
-// InitSecContext is the older two-arg form of the GSSAPIClient interface.
-func (c *RawGSSAPIClient) InitSecContext(target string, token []byte) ([]byte, bool, error) {
+func (c *InitiatorGSSAPIClient) InitSecContext(target string, token []byte) ([]byte, bool, error) {
 	return c.InitSecContextWithOptions(target, token, nil)
 }
 
-// InitSecContextWithOptions is called twice by go-ldap: first with
-// token==nil to produce the AP-REQ, and again with the server's AP-REP
-// bytes to verify mutual auth.
-func (c *RawGSSAPIClient) InitSecContextWithOptions(target string, token []byte, _ []int) ([]byte, bool, error) {
+func (c *InitiatorGSSAPIClient) InitSecContextWithOptions(target string, token []byte, _ []int) ([]byte, bool, error) {
 	if token == nil {
-		// Build the AP-REQ.
-		tkt, key, err := c.krb5Client.GetServiceTicket(target)
-		if err != nil {
-			return nil, false, fmt.Errorf("GetServiceTicket: %w", err)
-		}
-		c.sessionKey = key
-
-		// Build the AP-REQ with the TLS channel bindings embedded in
-		// the authenticator checksum per RFC 4121 §4.1.1.
-		krb5Token, err := spnego.NewKRB5TokenAPREQWithBindings(
-			c.krb5Client,
-			tkt,
-			key,
-			[]int{gssapi.ContextFlagInteg, gssapi.ContextFlagMutual},
-			[]int{flags.APOptionMutualRequired},
-			c.bindings,
-			nil, // no credential delegation
+		init, err := gssapi.NewInitiator(c.krb5Client, target,
+			gssapi.WithMutualAuth(),
+			gssapi.WithChannelBindings(c.bindings),
 		)
 		if err != nil {
-			return nil, false, fmt.Errorf("NewKRB5TokenAPREQWithBindings: %w", err)
+			return nil, false, fmt.Errorf("NewInitiator: %w", err)
 		}
-		c.sentAuth = krb5Token.Authenticator
+		c.init = init
 
-		output, _ := krb5Token.Marshal()
-		fmt.Printf("[>] AP-REQ (%d bytes), ticket %s (etype %d)\n", len(output), target, key.KeyType)
-		return output, true, nil
-	}
-
-	// Verify the server's mutual auth proof and build SecurityContext.
-	var krb5Token spnego.KRB5Token
-	if err := krb5Token.Unmarshal(token); err != nil {
-		return nil, false, fmt.Errorf("unmarshal AP-REP: %w", err)
-	}
-	if !krb5Token.IsAPRep() {
-		return nil, false, nil
-	}
-	fmt.Printf("[<] AP-REP (%d bytes)\n", len(token))
-
-	krb5Token.SetAPRepVerification(c.sentAuth, c.sessionKey)
-	ok, status := krb5Token.Verify()
-	if !ok {
-		return nil, false, fmt.Errorf("AP-REP verify: %s", status.Message)
-	}
-	fmt.Println("    mutual auth verified (RFC 4120 §3.2.4)")
-
-	var apRepSubkey types.EncryptionKey
-	var apRepSeq uint64
-	if krb5Token.EncAPRepPart != nil {
-		if krb5Token.EncAPRepPart.Subkey.KeyValue != nil {
-			apRepSubkey = krb5Token.EncAPRepPart.Subkey
-			fmt.Printf("    AP-REP subkey: etype %d, %d bytes  [acceptor subkey in use]\n",
-				apRepSubkey.KeyType, len(apRepSubkey.KeyValue))
+		out, err := c.init.Step(nil)
+		if err != nil {
+			return nil, false, fmt.Errorf("Step(nil): %w", err)
 		}
-		apRepSeq = uint64(krb5Token.EncAPRepPart.SequenceNumber)
+		fmt.Printf("[>] AP-REQ (%d bytes), ticket %s (etype %d)\n", len(out), target, c.init.SessionKeyEtype())
+		return out, true, nil
 	}
-	c.secCtx = gssapi.NewInitiatorContext(
-		c.sessionKey,
-		c.sentAuth.SubKey,
-		apRepSubkey,
-		uint64(c.sentAuth.SeqNumber),
-		apRepSeq,
-	)
+
+	if _, err := c.init.Step(token); err != nil {
+		return nil, false, fmt.Errorf("Step(AP-REP): %w", err)
+	}
+	fmt.Printf("[<] AP-REP: mutual auth verified\n")
+
+	ctx, err := c.init.SecurityContext()
+	if err != nil {
+		return nil, false, err
+	}
+	c.secCtx = ctx
 	return nil, false, nil
 }
 
-// NegotiateSaslAuth handles the RFC 4752 §3.1 SASL layer negotiation.
-func (c *RawGSSAPIClient) NegotiateSaslAuth(token []byte, authzid string) ([]byte, error) {
+func (c *InitiatorGSSAPIClient) NegotiateSaslAuth(token []byte, authzid string) ([]byte, error) {
 	if c.secCtx == nil {
-		return nil, fmt.Errorf("SecurityContext not initialised; AP-REP was never verified")
+		return nil, fmt.Errorf("SecurityContext not established")
 	}
 
 	fmt.Printf("[<] wrapped server offer (%d bytes)\n", len(token))
@@ -239,9 +189,8 @@ func (c *RawGSSAPIClient) NegotiateSaslAuth(token []byte, authzid string) ([]byt
 	return response, nil
 }
 
-// DeleteSecContext is called by go-ldap on connection teardown.
-func (c *RawGSSAPIClient) DeleteSecContext() error {
-	c.sessionKey = types.EncryptionKey{}
+func (c *InitiatorGSSAPIClient) DeleteSecContext() error {
 	c.secCtx = nil
+	c.init = nil
 	return nil
 }
