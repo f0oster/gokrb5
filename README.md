@@ -1,6 +1,11 @@
 # gokrb5
 
-Personal fork derived from [jcmturner/gokrb5](https://github.com/jcmturner/gokrb5), licensed under Apache 2.0. This fork has branched from upstream and does not aim to maintain compatibility. See [LICENSE](LICENSE) and [NOTICE](NOTICE) for attribution and license terms.
+Fork of [jcmturner/gokrb5](https://github.com/jcmturner/gokrb5), licensed under Apache 2.0.
+
+Reshapes the API around the GSS-API Initiator and Acceptor pattern, with TLS channel bindings and SASL/GSSAPI per-message protection. The API is not compatible with upstream; see Breaking changes below for migration. [LICENSE](LICENSE) and [NOTICE](NOTICE) cover attribution and license terms.
+
+> [!WARNING]
+> Work in progress; not recommended for production use.
 
 ## Features
 
@@ -16,31 +21,87 @@ Personal fork derived from [jcmturner/gokrb5](https://github.com/jcmturner/gokrb
 
 Tested against Active Directory (Windows Server 2022) and FreeIPA (MIT KDC).
 
-## Breaking changes:
+## Breaking changes from `github.com/jcmturner/gokrb5/v8`
 
-### PA-FX-FAST removal
+This fork is not API-compatible with upstream. The module path has changed:
 
-`client.DisablePAFXFAST` is removed. `PA-REQ-ENC-PA-REP` is sent on every AS-REQ, and the echo is verified per RFC 6806 §11 when the `enc-pa-rep` flag is set. `PA-FX-FAST` (RFC 6113) is not required in the encrypted PA-data, so KDCs that do not advertise FAST (including default Active Directory) interoperate.
+```go
+// was
+github.com/jcmturner/gokrb5/v8
 
-### service package and SPNEGO hybrid type removed
+// now
+github.com/f0oster/gokrb5
+```
 
-The server-side AP-REQ verifier has moved out of the `service` package and into `gssapi`. Build a server-side acceptor with `gssapi.NewAcceptor(kt, opts...)` and call `Accept(mechToken)`; replay-cache lookup, host-address check, and PAC processing run automatically. What were `service.<Option>` settings are now `gssapi.AcceptorOption` values; `service.GetReplayCache` is now `gssapi.GetReplayCache`.
+All imports must be updated. The minimum Go version is `go 1.25`.
 
-The HTTP-side helpers (`KRB5BasicAuthenticator`, `SessionMgr`) have moved into the `spnego` package. The `service` package no longer exists.
+### `client.DisablePAFXFAST` removed
 
-The hybrid `*spnego.SPNEGO` type is gone. Client-side callers replace `spnego.SPNEGOClient(cl, spn)` with `gssapi.NewInitiator(cl, spn, opts...)` (or `spnego.NewInitiator` for SPNEGO-framed transports). Server-side callers replace `spnego.SPNEGOService(kt, ...)` with `spnego.NewAcceptor(kt, opts...)`. `spnego.NewKRB5TokenAPREQ` is removed; produce an AP-REQ mech token by calling `Step(nil)` on a `gssapi.NewInitiator` (or `gssapi.NewInitiatorFromTicket` when the ticket is already in hand). `KRB5Token.Verify` for AP-REQ tokens is absorbed into `gssapi.Acceptor.Accept`. `SPNEGOToken.Context()` is removed; the verified credentials are exposed as a field on the `*spnego.Acceptance` value returned from `spnego.Acceptor.Accept`.
+`client.DisablePAFXFAST` is removed. `PA-REQ-ENC-PA-REP` is sent on every AS-REQ, and the echo is verified per RFC 6806 §11 when the `enc-pa-rep` flag is set. `PA-FX-FAST` (RFC 6113) is not required in the encrypted PA-data.
 
-`spnego.SPNEGOKRB5Authenticate` takes a pre-built `*spnego.Acceptor` plus `spnego.HTTPOption` values (`WithSessionManager`, `WithHTTPLogger`). GSS-level policy (keytab, permitted enctypes, max clock skew) goes on the Acceptor; HTTP-level concerns go on the middleware.
+### `service` package removed
 
-### service package and SPNEGO hybrid type removed
+The server-side AP-REQ verifier has moved out of the `service` package and into `gssapi`. Build a server-side acceptor and call `Accept`:
 
-The server-side AP-REQ verifier has moved out of `service` and into `gssapi`. Build a server-side acceptor with `gssapi.NewAcceptor(kt, opts...)` and call `Accept(mechToken)`; replay-cache lookup, host-address check, and PAC processing run automatically. What were `service.<Option>` settings are now `gssapi.AcceptorOption` values.
+```go
+acc := gssapi.NewAcceptor(kt, opts...)
+acceptance, err := acc.Accept(mechToken)
+```
 
-The HTTP-side helpers (`KRB5BasicAuthenticator`, `SessionMgr`) have moved into the `spnego` package. The `service` package no longer exists.
+`acceptance` is a `*gssapi.Acceptance` carrying `ResponseToken` (the AP-REP mech token, non-nil only under mutual auth), `Context` (the established `*gssapi.SecurityContext`), and `Credentials` (the verified client identity). Replay-cache lookup, host-address check, and PAC processing run automatically. What were `service.<Option>` setters are now `gssapi.AcceptorOption` values; `service.GetReplayCache` is now `gssapi.GetReplayCache`.
 
-The hybrid `*spnego.SPNEGO` type is gone. Client-side callers now build `gssapi.NewInitiator(cl, spn, opts...)` for raw GSS or `spnego.NewInitiator(cl, spn, opts...)` for SPNEGO-framed transports; these replace `SPNEGOClient` and `SPNEGOClientWithBindings`. Server-side callers use `gssapi.NewAcceptor` or `spnego.NewAcceptor`; these replace `SPNEGOService`. To produce an AP-REQ mech token directly, call `Step(nil)` on an Initiator (or use `gssapi.NewInitiatorFromTicket` when the ticket is already in hand); this replaces `NewKRB5TokenAPREQ` and `NewKRB5TokenAPREQWithBindings`. To verify a mutual-auth AP-REP, call `Step(replyBytes)` on the same Initiator; this replaces `KRB5Token.Verify` plus `SetAPRepVerification`. The `SPNEGOToken` accessor methods (`SecurityContext`, `Credentials`, `ResponseToken`) are removed; the same data is on the `*spnego.Acceptance` value returned from `spnego.Acceptor.Accept`.
+The HTTP-side helpers have moved into the `spnego` package: `service.KRB5BasicAuthenticator` is now `spnego.KRB5BasicAuthenticator`, and `service.SessionMgr` is now `spnego.SessionMgr`. The `service` package no longer exists.
 
-`spnego.SPNEGOKRB5Authenticate` takes a pre-built `*spnego.Acceptor` plus `spnego.HTTPOption` values (`WithSessionManager`, `WithHTTPLogger`). GSS-level policy (keytab, permitted enctypes, max clock skew) goes on the Acceptor; HTTP-level concerns go on the middleware.
+### SPNEGO API reworked
+
+The hybrid `*spnego.SPNEGO` type and its constructors (`SPNEGOClient`, `SPNEGOService`) are removed, along with `SPNEGOToken.Context()` and `KRB5Token.Verify` for AP-REQ tokens. SPNEGO is split into separate Initiator and Acceptor types.
+
+Client-side context establishment:
+
+```go
+init, err := spnego.NewInitiator(cl, spn, gssapi.WithMutualAuth())
+sptBytes, err := init.Step(nil)         // build NegTokenInit
+// send sptBytes, receive respBytes
+if _, err := init.Step(respBytes); err != nil { /* ... */ }
+ctx, _ := init.SecurityContext()
+```
+
+Server-side acceptance:
+
+```go
+acc := spnego.NewAcceptor(kt, opts...)
+acceptance, err := acc.Accept(spnegoBytes)
+// send acceptance.ResponseToken back; use acceptance.Context for Wrap/Unwrap
+```
+
+Code that previously called `spnego.SPNEGOClient`, `SPNEGOService`, `SPNEGOToken.Verify`, or `SPNEGOToken.Context` no longer compiles.
+
+For raw GSS callers (no SPNEGO framing on the wire) the equivalents are `gssapi.NewInitiator` and `gssapi.NewAcceptor`. To produce an AP-REQ mech token directly, replace `spnego.NewKRB5TokenAPREQ` with `Step(nil)` on a `gssapi.NewInitiator` (or `gssapi.NewInitiatorFromTicket` when the ticket is already in hand).
+
+`SPNEGOToken` itself is now a token-container type (`Marshal` and `Unmarshal` only); negotiation and verification happen on `Initiator` and `Acceptor`.
+
+### HTTP middleware signature changed
+
+`spnego.SPNEGOKRB5Authenticate` no longer takes a keytab and `service.<Option>` values. Construct a `*spnego.Acceptor` first, then pass it plus `spnego.HTTPOption` values:
+
+```go
+acc := spnego.NewAcceptor(kt,
+    gssapi.WithKeytabPrincipal("HTTP/host.example"),
+    gssapi.WithPermittedEnctypes([]int32{etypeID.AES256_CTS_HMAC_SHA1_96}),
+)
+http.Handle("/", spnego.SPNEGOKRB5Authenticate(handler, acc,
+    spnego.WithHTTPLogger(l),
+    spnego.WithSessionManager(sm),
+))
+```
+
+The Acceptor configures Kerberos verification. The middleware adds session and logging behavior on top.
+
+### Migration summary
+
+Most code using `client`, `config`, `credentials`, or `keytab` requires only import-path updates and removing `DisablePAFXFAST` from client construction.
+
+Code using the `service` package, the SPNEGO HTTP middleware, the hybrid `*spnego.SPNEGO` type, or `KRB5Token.Verify` requires structural changes; switch to `gssapi.NewInitiator` / `gssapi.NewAcceptor` (raw GSS) or `spnego.NewInitiator` / `spnego.NewAcceptor` (SPNEGO-framed). Per-message Wrap, Unwrap, and MIC are unchanged once you hold a `*gssapi.SecurityContext`; only the way you obtain that context has changed.
 
 ## Implemented encryption and checksum types
 
