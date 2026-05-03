@@ -44,6 +44,7 @@ func New() *Config {
 
 // LibDefaults represents the [libdefaults] section of the configuration.
 type LibDefaults struct {
+	AllowRC4        bool //default false
 	AllowWeakCrypto bool //default false
 	// ap_req_checksum_type int //unlikely to support this
 	Canonicalize bool          //default false
@@ -53,10 +54,10 @@ type LibDefaults struct {
 	DefaultClientKeytabName string //default /usr/local/var/krb5/user/%{euid}/client.keytab
 	DefaultKeytabName       string //default /etc/krb5.keytab
 	DefaultRealm            string
-	DefaultTGSEnctypes      []string //default aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96 des3-cbc-sha1 arcfour-hmac-md5 camellia256-cts-cmac camellia128-cts-cmac des-cbc-crc des-cbc-md5 des-cbc-md4
-	DefaultTktEnctypes      []string //default aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96 des3-cbc-sha1 arcfour-hmac-md5 camellia256-cts-cmac camellia128-cts-cmac des-cbc-crc des-cbc-md5 des-cbc-md4
-	DefaultTGSEnctypeIDs    []int32  //default aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96 des3-cbc-sha1 arcfour-hmac-md5 camellia256-cts-cmac camellia128-cts-cmac des-cbc-crc des-cbc-md5 des-cbc-md4
-	DefaultTktEnctypeIDs    []int32  //default aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96 des3-cbc-sha1 arcfour-hmac-md5 camellia256-cts-cmac camellia128-cts-cmac des-cbc-crc des-cbc-md5 des-cbc-md4
+	DefaultTGSEnctypes      []string //default mitDefaultEnctypes
+	DefaultTktEnctypes      []string //default mitDefaultEnctypes
+	DefaultTGSEnctypeIDs    []int32
+	DefaultTktEnctypeIDs    []int32
 	DNSCanonicalizeHostname bool     //default true
 	DNSLookupKDC            bool     //default false
 	DNSLookupRealm          bool
@@ -69,7 +70,7 @@ type LibDefaults struct {
 	KDCTimeSync             int            //default 1
 	//kdc_req_checksum_type int //unlikely to implement as for very old KDCs
 	NoAddresses         bool     //default true
-	PermittedEnctypes   []string //default aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96 des3-cbc-sha1 arcfour-hmac-md5 camellia256-cts-cmac camellia128-cts-cmac des-cbc-crc des-cbc-md5 des-cbc-md4
+	PermittedEnctypes   []string //default mitDefaultEnctypes
 	PermittedEnctypeIDs []int32
 	//plugin_base_dir string //not supporting plugins
 	PreferredPreauthTypes []int         //default “17, 16, 15, 14”, which forces libkrb5 to attempt to use PKINIT if it is supported
@@ -135,14 +136,14 @@ func newLibDefaults() LibDefaults {
 		Clockskew:               time.Duration(300) * time.Second,
 		DefaultClientKeytabName: fmt.Sprintf("/usr/local/var/krb5/user/%s/client.keytab", uid),
 		DefaultKeytabName:       "/etc/krb5.keytab",
-		DefaultTGSEnctypes:      []string{"aes256-cts-hmac-sha1-96", "aes128-cts-hmac-sha1-96", "des3-cbc-sha1", "arcfour-hmac-md5", "camellia256-cts-cmac", "camellia128-cts-cmac", "des-cbc-crc", "des-cbc-md5", "des-cbc-md4"},
-		DefaultTktEnctypes:      []string{"aes256-cts-hmac-sha1-96", "aes128-cts-hmac-sha1-96", "des3-cbc-sha1", "arcfour-hmac-md5", "camellia256-cts-cmac", "camellia128-cts-cmac", "des-cbc-crc", "des-cbc-md5", "des-cbc-md4"},
+		DefaultTGSEnctypes:      mitDefaultEnctypes(),
+		DefaultTktEnctypes:      mitDefaultEnctypes(),
 		DNSCanonicalizeHostname: true,
 		K5LoginDirectory:        hdir,
 		KDCDefaultOptions:       opts,
 		KDCTimeSync:             1,
 		NoAddresses:             true,
-		PermittedEnctypes:       []string{"aes256-cts-hmac-sha1-96", "aes128-cts-hmac-sha1-96", "des3-cbc-sha1", "arcfour-hmac-md5", "camellia256-cts-cmac", "camellia128-cts-cmac", "des-cbc-crc", "des-cbc-md5", "des-cbc-md4"},
+		PermittedEnctypes:       mitDefaultEnctypes(),
 		RDNS:                    true,
 		RealmTryDomains:         -1,
 		SafeChecksumType:        8,
@@ -150,10 +151,24 @@ func newLibDefaults() LibDefaults {
 		UDPPreferenceLimit:      1465,
 		PreferredPreauthTypes:   []int{17, 16, 15, 14},
 	}
-	l.DefaultTGSEnctypeIDs = parseETypes(l.DefaultTGSEnctypes, l.AllowWeakCrypto)
-	l.DefaultTktEnctypeIDs = parseETypes(l.DefaultTktEnctypes, l.AllowWeakCrypto)
-	l.PermittedEnctypeIDs = parseETypes(l.PermittedEnctypes, l.AllowWeakCrypto)
+	l.DefaultTGSEnctypeIDs = parseETypes(l.DefaultTGSEnctypes, l.AllowWeakCrypto, l.AllowRC4)
+	l.DefaultTktEnctypeIDs = parseETypes(l.DefaultTktEnctypes, l.AllowWeakCrypto, l.AllowRC4)
+	l.PermittedEnctypeIDs = parseETypes(l.PermittedEnctypes, l.AllowWeakCrypto, l.AllowRC4)
 	return l
+}
+
+// mitDefaultEnctypes returns the default_enctype_list for MIT Kerberos as of 1.21.
+func mitDefaultEnctypes() []string {
+	return []string{
+		"aes256-cts-hmac-sha1-96",
+		"aes128-cts-hmac-sha1-96",
+		"aes256-cts-hmac-sha384-192",
+		"aes128-cts-hmac-sha256-128",
+		"des3-cbc-sha1",
+		"arcfour-hmac",
+		"camellia128-cts-cmac",
+		"camellia256-cts-cmac",
+	}
 }
 
 // Parse the lines of the [libdefaults] section of the configuration into the LibDefaults struct.
@@ -174,6 +189,12 @@ func (l *LibDefaults) parseLines(lines []string) error {
 		p := strings.Split(line, "=")
 		key := strings.TrimSpace(strings.ToLower(p[0]))
 		switch key {
+		case "allow_rc4":
+			v, err := parseBoolean(p[1])
+			if err != nil {
+				return InvalidErrorf("libdefaults section line (%s): %v", line, err)
+			}
+			l.AllowRC4 = v
 		case "allow_weak_crypto":
 			v, err := parseBoolean(p[1])
 			if err != nil {
@@ -343,9 +364,9 @@ func (l *LibDefaults) parseLines(lines []string) error {
 			l.VerifyAPReqNofail = v
 		}
 	}
-	l.DefaultTGSEnctypeIDs = parseETypes(l.DefaultTGSEnctypes, l.AllowWeakCrypto)
-	l.DefaultTktEnctypeIDs = parseETypes(l.DefaultTktEnctypes, l.AllowWeakCrypto)
-	l.PermittedEnctypeIDs = parseETypes(l.PermittedEnctypes, l.AllowWeakCrypto)
+	l.DefaultTGSEnctypeIDs = parseETypes(l.DefaultTGSEnctypes, l.AllowWeakCrypto, l.AllowRC4)
+	l.DefaultTktEnctypeIDs = parseETypes(l.DefaultTktEnctypes, l.AllowWeakCrypto, l.AllowRC4)
+	l.PermittedEnctypeIDs = parseETypes(l.PermittedEnctypes, l.AllowWeakCrypto, l.AllowRC4)
 	return nil
 }
 
@@ -644,11 +665,12 @@ func NewFromScanner(scanner *bufio.Scanner) (*Config, error) {
 	return c, e
 }
 
-// Parse a space delimited list of ETypes into a list of EType numbers optionally filtering out weak ETypes.
-func parseETypes(s []string, w bool) []int32 {
+// Parse a space-delimited list of ETypes into EType numbers, dropping
+// weak ETypes unless allowWeak and RC4-HMAC unless allowRC4.
+func parseETypes(s []string, allowWeak, allowRC4 bool) []int32 {
 	var eti []int32
 	for _, et := range s {
-		if !w {
+		if !allowWeak {
 			var weak bool
 			for _, wet := range strings.Fields(WeakETypeList) {
 				if et == wet {
@@ -661,9 +683,13 @@ func parseETypes(s []string, w bool) []int32 {
 			}
 		}
 		i := etypeID.EtypeSupported(et)
-		if i != 0 {
-			eti = append(eti, i)
+		if i == 0 {
+			continue
 		}
+		if !allowRC4 && i == etypeID.RC4_HMAC {
+			continue
+		}
+		eti = append(eti, i)
 	}
 	return eti
 }

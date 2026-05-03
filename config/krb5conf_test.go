@@ -80,6 +80,7 @@ const (
 `
 	krb5ConfJson = `{
   "LibDefaults": {
+    "AllowRC4": false,
     "AllowWeakCrypto": false,
     "Canonicalize": false,
     "CCacheType": 4,
@@ -90,13 +91,12 @@ const (
     "DefaultTGSEnctypes": [
       "aes256-cts-hmac-sha1-96",
       "aes128-cts-hmac-sha1-96",
+      "aes256-cts-hmac-sha384-192",
+      "aes128-cts-hmac-sha256-128",
       "des3-cbc-sha1",
-      "arcfour-hmac-md5",
-      "camellia256-cts-cmac",
+      "arcfour-hmac",
       "camellia128-cts-cmac",
-      "des-cbc-crc",
-      "des-cbc-md5",
-      "des-cbc-md4"
+      "camellia256-cts-cmac"
     ],
     "DefaultTktEnctypes": [
       "aes256-cts-hmac-sha1-96",
@@ -105,7 +105,8 @@ const (
     "DefaultTGSEnctypeIDs": [
       18,
       17,
-      23
+      20,
+      19
     ],
     "DefaultTktEnctypeIDs": [
       18,
@@ -128,18 +129,18 @@ const (
     "PermittedEnctypes": [
       "aes256-cts-hmac-sha1-96",
       "aes128-cts-hmac-sha1-96",
+      "aes256-cts-hmac-sha384-192",
+      "aes128-cts-hmac-sha256-128",
       "des3-cbc-sha1",
-      "arcfour-hmac-md5",
-      "camellia256-cts-cmac",
+      "arcfour-hmac",
       "camellia128-cts-cmac",
-      "des-cbc-crc",
-      "des-cbc-md5",
-      "des-cbc-md4"
+      "camellia256-cts-cmac"
     ],
     "PermittedEnctypeIDs": [
       18,
       17,
-      23
+      20,
+      19
     ],
     "PreferredPreauthTypes": [
       17,
@@ -677,4 +678,57 @@ func TestJSON(t *testing.T) {
 	assert.Equal(t, krb5ConfJson, j, "krb config marshaled json not as expected")
 
 	t.Log(j)
+}
+
+const rc4HmacEtypeID int32 = 23
+
+func TestAllowRC4_DefaultFiltersRC4(t *testing.T) {
+	t.Parallel()
+	c := New()
+	for _, ids := range [][]int32{
+		c.LibDefaults.DefaultTGSEnctypeIDs,
+		c.LibDefaults.DefaultTktEnctypeIDs,
+		c.LibDefaults.PermittedEnctypeIDs,
+	} {
+		for _, id := range ids {
+			assert.NotEqual(t, rc4HmacEtypeID, id, "RC4 must not appear when AllowRC4 is false")
+		}
+	}
+}
+
+func TestAllowRC4_TrueRetainsRC4(t *testing.T) {
+	t.Parallel()
+	c, err := NewFromString(`
+[libdefaults]
+ allow_rc4 = true
+ default_realm = TEST.GOKRB5
+`)
+	if err != nil {
+		t.Fatalf("Error loading config: %v", err)
+	}
+	assert.True(t, c.LibDefaults.AllowRC4, "AllowRC4 parsed from libdefaults")
+	assert.Contains(t, c.LibDefaults.DefaultTGSEnctypeIDs, rc4HmacEtypeID, "RC4 retained in default_tgs_enctypes")
+	assert.Contains(t, c.LibDefaults.DefaultTktEnctypeIDs, rc4HmacEtypeID, "RC4 retained in default_tkt_enctypes")
+	assert.Contains(t, c.LibDefaults.PermittedEnctypeIDs, rc4HmacEtypeID, "RC4 retained in permitted_enctypes")
+}
+
+func TestAllowRC4_ExplicitRC4FilteredWhenOff(t *testing.T) {
+	t.Parallel()
+	c, err := NewFromString(`
+[libdefaults]
+ default_realm = TEST.GOKRB5
+ default_tkt_enctypes = aes256-cts-hmac-sha1-96 arcfour-hmac-md5
+ default_tgs_enctypes = aes256-cts-hmac-sha1-96 rc4-hmac
+ permitted_enctypes = aes256-cts-hmac-sha1-96 arcfour-hmac
+`)
+	if err != nil {
+		t.Fatalf("Error loading config: %v", err)
+	}
+	for _, ids := range [][]int32{
+		c.LibDefaults.DefaultTGSEnctypeIDs,
+		c.LibDefaults.DefaultTktEnctypeIDs,
+		c.LibDefaults.PermittedEnctypeIDs,
+	} {
+		assert.NotContains(t, ids, rc4HmacEtypeID, "RC4 filtered regardless of which alias the operator used")
+	}
 }
