@@ -538,6 +538,197 @@ func TestSecurityContext_ConcurrentWrapUnwrap_DirectionsIndependent(t *testing.T
 	assert.Equal(t, uint64(N), ctx.NextRecvSeq())
 }
 
+// pairContexts builds matched initiator/acceptor contexts with seeds
+// coordinated as if they had completed an AP-REQ/AP-REP exchange:
+// initiator's send seed = acceptor's recv anchor (Authenticator.SeqNumber);
+// acceptor's send seed = initiator's recv anchor (EncAPRepPart.SequenceNumber).
+func pairContexts(t *testing.T, initSendSeed, accSendSeed uint64, authSubkey, apRepSubkey types.EncryptionKey) (*SecurityContext, *SecurityContext) {
+	t.Helper()
+	initiator := NewInitiatorContext(getSessionKey(), authSubkey, apRepSubkey, initSendSeed, accSendSeed)
+	acceptor := NewAcceptorContext(getSessionKey(), authSubkey, apRepSubkey, accSendSeed, initSendSeed)
+	return initiator, acceptor
+}
+
+func TestNewAcceptorContext_SeedsSendAndRecv(t *testing.T) {
+	t.Parallel()
+	ctx := NewAcceptorContext(getSessionKey(), types.EncryptionKey{}, types.EncryptionKey{}, 100, 200)
+	assert.False(t, ctx.IsInitiator, "acceptor-side context")
+	assert.Equal(t, uint64(100), ctx.SendSeq(), "sendSeq seeded from EncAPRepPart")
+	assert.Equal(t, uint64(200), ctx.NextRecvSeq(), "recvSeq seeded from initiator's Authenticator")
+}
+
+func TestSecurityContext_BidirectionalWrap_Integrity(t *testing.T) {
+	t.Parallel()
+	initiator, acceptor := pairContexts(t, 50, 100, types.EncryptionKey{}, types.EncryptionKey{})
+
+	// Initiator → acceptor.
+	plain := []byte("from initiator")
+	tok, err := initiator.Wrap(plain)
+	assert.NoError(t, err)
+
+	// Outgoing initiator token must NOT set SentByAcceptorFlag.
+	parsed := &WrapToken{}
+	assert.NoError(t, parsed.Unmarshal(tok, false))
+	assert.Zero(t, parsed.Flags&SentByAcceptorFlag, "initiator outbound has acceptor flag clear")
+	assert.Equal(t, uint64(50), parsed.SndSeqNum)
+
+	got, err := acceptor.Unwrap(tok)
+	assert.NoError(t, err)
+	assert.Equal(t, plain, got)
+	assert.Equal(t, SeqStatusOK, acceptor.LastRecvStatus())
+	assert.Equal(t, uint64(51), acceptor.NextRecvSeq())
+
+	// Acceptor → initiator.
+	reply := []byte("from acceptor")
+	tok, err = acceptor.Wrap(reply)
+	assert.NoError(t, err)
+
+	// Outgoing acceptor token MUST set SentByAcceptorFlag.
+	parsed = &WrapToken{}
+	assert.NoError(t, parsed.Unmarshal(tok, true))
+	assert.NotZero(t, parsed.Flags&SentByAcceptorFlag, "acceptor outbound has acceptor flag set")
+	assert.Equal(t, uint64(100), parsed.SndSeqNum)
+
+	got, err = initiator.Unwrap(tok)
+	assert.NoError(t, err)
+	assert.Equal(t, reply, got)
+	assert.Equal(t, SeqStatusOK, initiator.LastRecvStatus())
+	assert.Equal(t, uint64(101), initiator.NextRecvSeq())
+
+	// Sequence advances independently per direction across multiple exchanges.
+	for i := uint64(0); i < 3; i++ {
+		t1, err := initiator.Wrap([]byte("ping"))
+		assert.NoError(t, err)
+		_, err = acceptor.Unwrap(t1)
+		assert.NoError(t, err)
+		t2, err := acceptor.Wrap([]byte("pong"))
+		assert.NoError(t, err)
+		_, err = initiator.Unwrap(t2)
+		assert.NoError(t, err)
+	}
+	assert.Equal(t, uint64(54), initiator.SendSeq())
+	assert.Equal(t, uint64(54), acceptor.NextRecvSeq())
+	assert.Equal(t, uint64(104), acceptor.SendSeq())
+	assert.Equal(t, uint64(104), initiator.NextRecvSeq())
+}
+
+func TestSecurityContext_BidirectionalWrap_Sealed(t *testing.T) {
+	t.Parallel()
+	initiator, acceptor := pairContexts(t, 0, 0, types.EncryptionKey{}, types.EncryptionKey{})
+	initiator.Confidential = true
+	acceptor.Confidential = true
+
+	// Initiator sealed → acceptor opens.
+	plain := []byte("sealed from initiator")
+	tok, err := initiator.Wrap(plain)
+	assert.NoError(t, err)
+	parsed := &WrapToken{}
+	assert.NoError(t, parsed.Unmarshal(tok, false))
+	assert.NotZero(t, parsed.Flags&SealedFlag, "SealedFlag set on initiator outbound")
+
+	got, err := acceptor.Unwrap(tok)
+	assert.NoError(t, err)
+	assert.Equal(t, plain, got)
+
+	// Acceptor sealed → initiator opens.
+	reply := []byte("sealed from acceptor")
+	tok, err = acceptor.Wrap(reply)
+	assert.NoError(t, err)
+	parsed = &WrapToken{}
+	assert.NoError(t, parsed.Unmarshal(tok, true))
+	assert.NotZero(t, parsed.Flags&SealedFlag, "SealedFlag set on acceptor outbound")
+	assert.NotZero(t, parsed.Flags&SentByAcceptorFlag, "SentByAcceptorFlag set on acceptor outbound")
+
+	got, err = initiator.Unwrap(tok)
+	assert.NoError(t, err)
+	assert.Equal(t, reply, got)
+}
+
+func TestSecurityContext_BidirectionalMIC(t *testing.T) {
+	t.Parallel()
+	initiator, acceptor := pairContexts(t, 20, 40, types.EncryptionKey{}, types.EncryptionKey{})
+
+	// Initiator → acceptor MIC.
+	msg := []byte("message from initiator")
+	sig, err := initiator.MakeSignature(msg)
+	assert.NoError(t, err)
+	parsed := &MICToken{}
+	assert.NoError(t, parsed.Unmarshal(sig, false))
+	assert.Zero(t, parsed.Flags&MICTokenFlagSentByAcceptor, "initiator MIC has acceptor flag clear")
+
+	err = acceptor.VerifySignature(msg, sig)
+	assert.NoError(t, err)
+
+	// Acceptor → initiator MIC.
+	reply := []byte("reply from acceptor")
+	sig, err = acceptor.MakeSignature(reply)
+	assert.NoError(t, err)
+	parsed = &MICToken{}
+	assert.NoError(t, parsed.Unmarshal(sig, true))
+	assert.NotZero(t, parsed.Flags&MICTokenFlagSentByAcceptor, "acceptor MIC has acceptor flag set")
+
+	err = initiator.VerifySignature(reply, sig)
+	assert.NoError(t, err)
+}
+
+func TestSecurityContext_BidirectionalAPRepSubkey(t *testing.T) {
+	t.Parallel()
+	// MS-KILE §3.1.1.2: when AP-REP subkey is present, both sides use it
+	// as the per-message session key and set AcceptorSubkeyFlag on
+	// outgoing tokens regardless of role.
+	apRepSubkey := types.EncryptionKey{
+		KeyType:  sessionKeyType,
+		KeyValue: []byte("abcdef0123456789"),
+	}
+	initiator, acceptor := pairContexts(t, 0, 0, types.EncryptionKey{}, apRepSubkey)
+
+	// Initiator → acceptor: flag set, acceptor opens with APRepSubkey.
+	plain := []byte("with subkey from initiator")
+	tok, err := initiator.Wrap(plain)
+	assert.NoError(t, err)
+	parsed := &WrapToken{}
+	assert.NoError(t, parsed.Unmarshal(tok, false))
+	assert.NotZero(t, parsed.Flags&AcceptorSubkeyFlag, "initiator outbound sets AcceptorSubkeyFlag when APRepSubkey is in use")
+
+	got, err := acceptor.Unwrap(tok)
+	assert.NoError(t, err)
+	assert.Equal(t, plain, got)
+
+	// Acceptor → initiator: flag set, initiator opens with APRepSubkey.
+	reply := []byte("with subkey from acceptor")
+	tok, err = acceptor.Wrap(reply)
+	assert.NoError(t, err)
+	parsed = &WrapToken{}
+	assert.NoError(t, parsed.Unmarshal(tok, true))
+	assert.NotZero(t, parsed.Flags&AcceptorSubkeyFlag, "acceptor outbound sets AcceptorSubkeyFlag")
+	assert.NotZero(t, parsed.Flags&SentByAcceptorFlag, "acceptor outbound sets SentByAcceptorFlag")
+
+	got, err = initiator.Unwrap(tok)
+	assert.NoError(t, err)
+	assert.Equal(t, reply, got)
+}
+
+func TestSecurityContext_AntiReflection(t *testing.T) {
+	t.Parallel()
+	// RFC 4121 §4.2.2: a context must reject its own outbound tokens
+	// reflected back. Initiator-emitted tokens have SentByAcceptorFlag
+	// clear; acceptor-emitted have it set. Each side rejects the wrong
+	// direction at Unmarshal time.
+	initiator, acceptor := pairContexts(t, 0, 0, types.EncryptionKey{}, types.EncryptionKey{})
+
+	// Acceptor's own outbound reflected back to itself.
+	accTok, err := acceptor.Wrap([]byte("from acceptor"))
+	assert.NoError(t, err)
+	_, err = acceptor.Unwrap(accTok)
+	assert.Error(t, err, "acceptor must reject its own outbound (anti-reflection)")
+
+	// Initiator's own outbound reflected back to itself.
+	initTok, err := initiator.Wrap([]byte("from initiator"))
+	assert.NoError(t, err)
+	_, err = initiator.Unwrap(initTok)
+	assert.Error(t, err, "initiator must reject its own outbound (anti-reflection)")
+}
+
 // TestSecurityContext_ConcurrentMakeSignature_AllocatesUniqueSeq is the
 // MIC-token counterpart to ConcurrentWrap. Same invariant: every produced
 // MIC carries a unique sequence number.

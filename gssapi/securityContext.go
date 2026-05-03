@@ -10,9 +10,11 @@ import (
 	"github.com/f0oster/gokrb5/types"
 )
 
-// SecurityContext is an established initiator-side Kerberos GSS security
-// context. It owns the per-message send/receive sequence state and the
-// key-selection rules for Wrap and MIC tokens per RFC 4121 §4.2.
+// SecurityContext is an established Kerberos GSS security context. It
+// owns the per-message send/receive sequence state and the key-selection
+// rules for Wrap and MIC tokens per RFC 4121 §4.2. Both initiator-side
+// and acceptor-side contexts are supported; use NewInitiatorContext or
+// NewAcceptorContext to construct.
 //
 // Incoming sequence numbers flow through a 64-slot sliding window
 // matching MIT krb5 (src/lib/gssapi/generic/util_seqstate.c:81-113);
@@ -24,20 +26,22 @@ import (
 // most recent check. Set StrictSequence to promote any non-OK status
 // to an error.
 //
-// The permissive default is required for Active Directory: AD emits
-// every server-to-client WrapToken with SND_SEQ=0 (observed against a
-// live DC), so after the first token every subsequent one is flagged
-// Duplicate. The window therefore provides no in-band replay
-// protection on the receive direction against AD; callers that need
-// replay protection there must rely on the underlying transport (e.g.
-// TLS) or enable StrictSequence and accept the loss of AD interop.
+// The permissive default is required for Active Directory interop on
+// initiator contexts: AD emits every server-to-client WrapToken with
+// SND_SEQ=0 (observed against a live DC), so after the first token
+// every subsequent one is flagged Duplicate. The window therefore
+// provides no in-band replay protection on the receive direction
+// against AD; callers that need replay protection there must rely on
+// the underlying transport (e.g. TLS) or enable StrictSequence and
+// accept the loss of AD interop. Acceptor contexts receive tokens
+// from initiators, where this AD quirk does not apply.
 //
 // Key selection follows RFC 4121 §4.2.2 and MS-KILE §3.1.1.2: outgoing
 // tokens use the highest-precedence non-empty key (APRepSubkey >
 // AuthenticatorSubkey > SessionKey) and set AcceptorSubkeyFlag when the
 // AP-REP subkey is in use. Incoming tokens are verified with the key
-// indicated by their own flag bit. Acceptor-side contexts are not
-// supported.
+// indicated by their own flag bit. The same precedence applies to
+// both roles.
 //
 // Per RFC 2743 §1.1.3, Wrap/MakeSignature may run concurrently with
 // Unwrap/VerifySignature on the same context. Same-direction concurrency
@@ -59,7 +63,9 @@ type SecurityContext struct {
 	// MS-KILE §3.1.1.2 when the server supplied one.
 	APRepSubkey types.EncryptionKey
 
-	// IsInitiator must be true; acceptor-side is not supported.
+	// IsInitiator selects which side this context represents. Set by
+	// NewInitiatorContext (true) or NewAcceptorContext (false); affects
+	// outgoing/incoming token direction flags and key-usage constants.
 	IsInitiator bool
 
 	// Confidential enables sealed (encrypted) WrapTokens per RFC 4121
@@ -105,6 +111,27 @@ func NewInitiatorContext(sessionKey, authSubkey, apRepSubkey types.EncryptionKey
 		sendSeq:             sentAuthSeq,
 	}
 	c.recvState = newSeqState(apRepSeq, c.ReplayDetect, c.SequenceDetect)
+	return c
+}
+
+// NewAcceptorContext builds an acceptor-side SecurityContext.
+// sentAPRepSeq is the SequenceNumber the acceptor placed in its
+// EncAPRepPart and seeds sendSeq. recvAuthSeq is the SeqNumber from
+// the initiator's AP-REQ Authenticator and anchors the receive sliding
+// window. authSubkey carries the initiator's Authenticator subkey;
+// apRepSubkey carries the subkey the acceptor placed in EncAPRepPart.
+// Either may be a zero EncryptionKey when absent.
+func NewAcceptorContext(sessionKey, authSubkey, apRepSubkey types.EncryptionKey, sentAPRepSeq, recvAuthSeq uint64) *SecurityContext {
+	c := &SecurityContext{
+		SessionKey:          sessionKey,
+		AuthenticatorSubkey: authSubkey,
+		APRepSubkey:         apRepSubkey,
+		IsInitiator:         false,
+		ReplayDetect:        true,
+		SequenceDetect:      true,
+		sendSeq:             sentAPRepSeq,
+	}
+	c.recvState = newSeqState(recvAuthSeq, c.ReplayDetect, c.SequenceDetect)
 	return c
 }
 
