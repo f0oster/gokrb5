@@ -11,7 +11,6 @@ import (
 	"github.com/f0oster/gokrb5/client"
 	"github.com/f0oster/gokrb5/crypto"
 	"github.com/f0oster/gokrb5/gssapi"
-	"github.com/f0oster/gokrb5/iana/flags"
 	"github.com/f0oster/gokrb5/iana/msgtype"
 	"github.com/f0oster/gokrb5/messages"
 	"github.com/f0oster/gokrb5/service"
@@ -57,6 +56,10 @@ type KRB5Token struct {
 	sessionKey    types.EncryptionKey
 	responseToken []byte
 	context       context.Context
+	// rawMechToken preserves the application-tagged input bytes from
+	// Unmarshal so the AP-REQ branch of Verify can pass them directly
+	// to gssapi.Acceptor.Accept without re-marshaling.
+	rawMechToken []byte
 }
 
 // ResponseToken returns the GSS MechToken bytes for the AP-REP that
@@ -108,6 +111,7 @@ func (m *KRB5Token) Marshal() ([]byte, error) {
 
 // Unmarshal a KRB5Token.
 func (m *KRB5Token) Unmarshal(b []byte) error {
+	m.rawMechToken = b
 	var oid asn1.ObjectIdentifier
 	r, err := asn1.UnmarshalWithParams(b, &oid, fmt.Sprintf("application,explicit,tag:%v", 0))
 	if err != nil {
@@ -151,20 +155,20 @@ func (m *KRB5Token) Unmarshal(b []byte) error {
 func (m *KRB5Token) Verify() (bool, gssapi.Status) {
 	switch hex.EncodeToString(m.tokID) {
 	case TOK_ID_KRB_AP_REQ:
-		ok, creds, err := service.VerifyAPREQ(&m.APReq, m.settings)
+		acceptor := newAcceptorFromSettings(m.settings)
+		acceptance, err := acceptor.Accept(m.rawMechToken,
+			gssapi.WithRemoteAddress(m.settings.ClientAddress()),
+		)
 		if err != nil {
 			return false, gssapi.Status{Code: gssapi.StatusDefectiveToken, Message: err.Error()}
 		}
-		if !ok {
-			return false, gssapi.Status{Code: gssapi.StatusDefectiveCredential, Message: "KRB5_AP_REQ token not valid"}
-		}
-		if types.IsFlagSet(&m.APReq.APOptions, flags.APOptionMutualRequired) {
-			if err := m.buildAPRep(); err != nil {
-				return false, gssapi.Status{Code: gssapi.StatusFailure, Message: err.Error()}
-			}
+		m.responseToken = acceptance.ResponseToken
+		if acceptance.Context != nil {
+			m.AcceptorSubkey = acceptance.Context.APRepSubkey
+			m.AcceptorSeqNumber = int64(acceptance.Context.SendSeq())
 		}
 		m.context = context.Background()
-		m.context = context.WithValue(m.context, ctxCredentials, creds)
+		m.context = context.WithValue(m.context, ctxCredentials, acceptance.Credentials)
 		return true, gssapi.Status{Code: gssapi.StatusComplete}
 	case TOK_ID_KRB_AP_REP:
 		// Client side: verify the AP-REP per RFC 4120 3.2.4. The caller
@@ -232,6 +236,33 @@ func (m *KRB5Token) SecurityContext() *gssapi.SecurityContext {
 		uint64(m.AcceptorSeqNumber),
 		uint64(m.APReq.Authenticator.SeqNumber),
 	)
+}
+
+// newAcceptorFromSettings builds a gssapi.Acceptor from a service.Settings.
+// Used by the AP-REQ branch of KRB5Token.Verify during the migration to
+// spnego.Acceptor; retired alongside the *spnego.SPNEGO hybrid type once
+// the SPNEGO HTTP middleware moves to spnego.NewAcceptor directly.
+func newAcceptorFromSettings(s *service.Settings) *gssapi.Acceptor {
+	var opts []gssapi.AcceptorOption
+	if pn := s.KeytabPrincipal(); pn != nil {
+		opts = append(opts, gssapi.WithKeytabPrincipal(pn.PrincipalNameString()))
+	}
+	if d := s.MaxClockSkew(); d != 0 {
+		opts = append(opts, gssapi.WithMaxClockSkew(d))
+	}
+	if s.RequireHostAddr() {
+		opts = append(opts, gssapi.RequireHostAddress())
+	}
+	if !s.DecodePAC() {
+		opts = append(opts, gssapi.DisablePACDecoding())
+	}
+	if pe := s.PermittedEnctypes(); len(pe) > 0 {
+		opts = append(opts, gssapi.WithPermittedEnctypes(pe))
+	}
+	if l := s.Logger(); l != nil {
+		opts = append(opts, gssapi.WithAcceptorLogger(l))
+	}
+	return gssapi.NewAcceptor(s.Keytab, opts...)
 }
 
 // buildAPRep constructs the AP-REP for an already-verified AP-REQ that

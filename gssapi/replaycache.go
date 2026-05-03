@@ -1,5 +1,4 @@
-// Package service provides server side integrations for Kerberos authentication.
-package service
+package gssapi
 
 import (
 	"crypto/sha256"
@@ -9,11 +8,11 @@ import (
 	"github.com/f0oster/gokrb5/types"
 )
 
-// Replay cache is required as specified in RFC 4120 section 3.2.3
-
-// Cache for tickets received from clients keyed by fully qualified
-// client principal name and realm. Used to track replay of tickets.
-type Cache struct {
+// ReplayCache implements the RFC 4120 §3.2.3 server-side replay
+// detection cache. Entries are keyed by client principal + realm,
+// authenticator timestamp, and a SHA-256 hash of the encrypted
+// authenticator ciphertext.
+type ReplayCache struct {
 	entries map[clientKey]clientEntries
 	mux     sync.Mutex
 }
@@ -40,23 +39,24 @@ type entryKey struct {
 	contentHash [sha256.Size]byte
 }
 
-// Cache entry tracking client time values of tickets sent to the service.
+// replayCacheEntry tracks the timestamps recorded for a stored authenticator.
 type replayCacheEntry struct {
 	presentedTime time.Time
 	sName         types.PrincipalName
 	cTime         time.Time // This combines the ticket's CTime and Cusec
 }
 
-// Instance of the ServiceCache used as a process-wide singleton.
+// Process-wide singleton shared by Acceptors that don't override via
+// WithReplayCache.
 var (
-	replayCache *Cache
+	replayCache *ReplayCache
 	once        sync.Once
 )
 
-// NewCache creates a Cache and starts a background goroutine that
-// periodically purges entries older than d.
-func NewCache(d time.Duration) *Cache {
-	c := &Cache{entries: make(map[clientKey]clientEntries)}
+// NewReplayCache creates a ReplayCache and starts a background goroutine
+// that periodically purges entries older than d.
+func NewReplayCache(d time.Duration) *ReplayCache {
+	c := &ReplayCache{entries: make(map[clientKey]clientEntries)}
 	go func() {
 		for {
 			time.Sleep(d)
@@ -66,10 +66,12 @@ func NewCache(d time.Duration) *Cache {
 	return c
 }
 
-// GetReplayCache returns a pointer to the process-wide Cache singleton.
-func GetReplayCache(d time.Duration) *Cache {
+// GetReplayCache returns the process-wide ReplayCache singleton, lazily
+// initialized on first call with TTL d. Subsequent calls reuse the
+// singleton; their d is ignored.
+func GetReplayCache(d time.Duration) *ReplayCache {
 	once.Do(func() {
-		replayCache = NewCache(d)
+		replayCache = NewReplayCache(d)
 	})
 	return replayCache
 }
@@ -79,8 +81,8 @@ func keyOf(a types.Authenticator) clientKey {
 	return clientKey{cname: a.CName.PrincipalNameString(), crealm: a.CRealm}
 }
 
-// ClearOldEntries clears entries from the Cache that are older than the duration provided.
-func (c *Cache) ClearOldEntries(d time.Duration) {
+// ClearOldEntries removes entries from the cache that are older than d.
+func (c *ReplayCache) ClearOldEntries(d time.Duration) {
 	c.mux.Lock()
 	defer c.mux.Unlock()
 	for ke, ce := range c.entries {
@@ -102,7 +104,7 @@ func (c *Cache) ClearOldEntries(d time.Duration) {
 // hash and so do not collide. The check and the add happen under a
 // single lock so concurrent callers presenting the same authenticator
 // see exactly one non-replay outcome.
-func (c *Cache) IsReplay(sname types.PrincipalName, a types.Authenticator, ciphertext []byte) bool {
+func (c *ReplayCache) IsReplay(sname types.PrincipalName, a types.Authenticator, ciphertext []byte) bool {
 	hash := sha256.Sum256(ciphertext)
 	c.mux.Lock()
 	defer c.mux.Unlock()

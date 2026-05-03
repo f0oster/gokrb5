@@ -1,4 +1,4 @@
-package service
+package gssapi
 
 import (
 	"sync"
@@ -29,9 +29,9 @@ func makeSName() types.PrincipalName {
 	}
 }
 
-func TestCache_IsReplay_DifferentRealms(t *testing.T) {
+func TestReplayCache_IsReplay_DifferentRealms(t *testing.T) {
 	t.Parallel()
-	c := &Cache{entries: make(map[clientKey]clientEntries)}
+	c := &ReplayCache{entries: make(map[clientKey]clientEntries)}
 	now := time.Now().UTC().Truncate(time.Second)
 	sname := makeSName()
 	a1 := makeAuth("REALM-A", "alice", now, 100)
@@ -44,9 +44,9 @@ func TestCache_IsReplay_DifferentRealms(t *testing.T) {
 	}
 }
 
-func TestCache_IsReplay_DetectsReplay(t *testing.T) {
+func TestReplayCache_IsReplay_DetectsReplay(t *testing.T) {
 	t.Parallel()
-	c := &Cache{entries: make(map[clientKey]clientEntries)}
+	c := &ReplayCache{entries: make(map[clientKey]clientEntries)}
 	now := time.Now().UTC().Truncate(time.Second)
 	sname := makeSName()
 	a := makeAuth("REALM-A", "alice", now, 100)
@@ -58,9 +58,9 @@ func TestCache_IsReplay_DetectsReplay(t *testing.T) {
 	}
 }
 
-func TestCache_IsReplay_DistinctContent(t *testing.T) {
+func TestReplayCache_IsReplay_DistinctContent(t *testing.T) {
 	t.Parallel()
-	c := &Cache{entries: make(map[clientKey]clientEntries)}
+	c := &ReplayCache{entries: make(map[clientKey]clientEntries)}
 	now := time.Now().UTC().Truncate(time.Second)
 	sname := makeSName()
 	a := makeAuth("REALM-A", "alice", now, 100)
@@ -75,9 +75,9 @@ func TestCache_IsReplay_DistinctContent(t *testing.T) {
 	}
 }
 
-func TestCache_IsReplay_TOCTOU(t *testing.T) {
+func TestReplayCache_IsReplay_TOCTOU(t *testing.T) {
 	t.Parallel()
-	c := &Cache{entries: make(map[clientKey]clientEntries)}
+	c := &ReplayCache{entries: make(map[clientKey]clientEntries)}
 	now := time.Now().UTC().Truncate(time.Second)
 	sname := makeSName()
 	a := makeAuth("REALM-A", "alice", now, 100)
