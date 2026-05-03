@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/f0oster/gokrb5/config"
 	"github.com/f0oster/gokrb5/credentials"
 	"github.com/f0oster/gokrb5/iana"
 	"github.com/f0oster/gokrb5/iana/etypeID"
@@ -14,6 +15,7 @@ import (
 	"github.com/f0oster/gokrb5/iana/patype"
 	"github.com/f0oster/gokrb5/keytab"
 	"github.com/f0oster/gokrb5/test/testdata"
+	"github.com/f0oster/gokrb5/types"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -307,6 +309,51 @@ func TestUnmarshalASRepDecodeAndDecrypt(t *testing.T) {
 	assert.Equal(t, testRealm, asRep.DecryptedEncPart.SRealm, "Service realm not as expected")
 	assert.Equal(t, int32(2), asRep.DecryptedEncPart.SName.NameType, "Name type for AS_REP not as expected")
 	assert.Equal(t, []string{"krbtgt", testRealm}, asRep.DecryptedEncPart.SName.NameString, "Service name string not as expected")
+}
+
+func TestTGSRep_Verify_RejectsNonPermittedSessionKeyEtype(t *testing.T) {
+	t.Parallel()
+	cname := types.PrincipalName{NameType: nametype.KRB_NT_PRINCIPAL, NameString: []string{"u"}}
+	rep := TGSRep{KDCRepFields: KDCRepFields{
+		CName:  cname,
+		Ticket: Ticket{Realm: testRealm},
+		DecryptedEncPart: EncKDCRepPart{
+			Key:    types.EncryptionKey{KeyType: etypeID.RC4_HMAC},
+			SRealm: testRealm,
+		},
+	}}
+	req := TGSReq{KDCReqFields: KDCReqFields{ReqBody: KDCReqBody{CName: cname, Realm: testRealm}}}
+	cfg := config.New()
+	cfg.LibDefaults.PermittedEnctypeIDs = []int32{etypeID.AES256_CTS_HMAC_SHA1_96}
+
+	ok, err := rep.Verify(cfg, req)
+	assert.False(t, ok)
+	assert.ErrorContains(t, err, "TGS_REP session key etype 23 not in permitted_enctypes")
+}
+
+func TestASRep_Verify_RejectsNonPermittedSessionKeyEtype(t *testing.T) {
+	t.Parallel()
+	var asRep ASRep
+	b, _ := hex.DecodeString(testuser1EType18ASREP)
+	if err := asRep.Unmarshal(b); err != nil {
+		t.Fatalf("AS REP Unmarshal error: %v", err)
+	}
+	asReq := ASReq{KDCReqFields: KDCReqFields{ReqBody: KDCReqBody{
+		CName: asRep.CName,
+		Realm: asRep.CRealm,
+		SName: types.PrincipalName{
+			NameType:   nametype.KRB_NT_SRV_INST,
+			NameString: []string{"krbtgt", testRealm},
+		},
+		Nonce: 2069991465, // matches the fixture's encrypted nonce
+	}}}
+	cfg := config.New()
+	cfg.LibDefaults.PermittedEnctypeIDs = []int32{etypeID.AES128_CTS_HMAC_SHA1_96} // excludes the fixture's etype 18
+	creds := credentials.New(testUser, testRealm).WithPassword(testUserPassword)
+
+	ok, err := asRep.Verify(cfg, creds, asReq)
+	assert.False(t, ok)
+	assert.ErrorContains(t, err, "AS_REP session key etype 18 not in permitted_enctypes")
 }
 
 func TestUnmarshalASRepDecodeAndDecrypt_withPassword(t *testing.T) {

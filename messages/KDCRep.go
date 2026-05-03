@@ -5,6 +5,7 @@ package messages
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jcmturner/gofork/encoding/asn1"
@@ -257,6 +258,11 @@ func (k *ASRep) Verify(cfg *config.Config, creds *credentials.Credentials, asReq
 	if err != nil {
 		return false, krberror.Errorf(err, krberror.DecryptingError, "error decrypting EncPart of AS_REP")
 	}
+	if permitted := cfg.LibDefaults.PermittedEnctypeIDs; len(permitted) > 0 {
+		if !slices.Contains(permitted, k.DecryptedEncPart.Key.KeyType) {
+			return false, krberror.NewErrorf(krberror.KRBMsgError, "AS_REP session key etype %d not in permitted_enctypes", k.DecryptedEncPart.Key.KeyType)
+		}
+	}
 	if k.DecryptedEncPart.Nonce != asReq.ReqBody.Nonce {
 		return false, krberror.NewErrorf(krberror.KRBMsgError, "possible replay attack, nonce in response does not match that in request")
 	}
@@ -330,6 +336,11 @@ func (k *TGSRep) Verify(cfg *config.Config, tgsReq TGSReq) (bool, error) {
 	}
 	if k.Ticket.Realm != tgsReq.ReqBody.Realm {
 		return false, krberror.NewErrorf(krberror.KRBMsgError, "realm in response ticket does not match what was requested. Requested: %s; Reply: %s", tgsReq.ReqBody.Realm, k.Ticket.Realm)
+	}
+	if permitted := cfg.LibDefaults.PermittedEnctypeIDs; len(permitted) > 0 {
+		if !slices.Contains(permitted, k.DecryptedEncPart.Key.KeyType) {
+			return false, krberror.NewErrorf(krberror.KRBMsgError, "TGS_REP session key etype %d not in permitted_enctypes", k.DecryptedEncPart.Key.KeyType)
+		}
 	}
 	if k.DecryptedEncPart.Nonce != tgsReq.ReqBody.Nonce {
 		return false, krberror.NewErrorf(krberror.KRBMsgError, "possible replay attack, nonce in response does not match that in request")
