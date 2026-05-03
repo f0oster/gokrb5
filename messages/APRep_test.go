@@ -5,9 +5,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/f0oster/gokrb5/crypto"
 	"github.com/f0oster/gokrb5/iana"
+	"github.com/f0oster/gokrb5/iana/keyusage"
 	"github.com/f0oster/gokrb5/iana/msgtype"
 	"github.com/f0oster/gokrb5/test/testdata"
+	"github.com/f0oster/gokrb5/types"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -116,6 +119,70 @@ func TestEncAPRepPartMarshalRoundTrip(t *testing.T) {
 	assert.Equal(t, a.Subkey.KeyType, b2.Subkey.KeyType)
 	assert.Equal(t, a.Subkey.KeyValue, b2.Subkey.KeyValue)
 	assert.Equal(t, a.SequenceNumber, b2.SequenceNumber)
+}
+
+func TestNewAPRep(t *testing.T) {
+	t.Parallel()
+	// AES128-CTS-HMAC-SHA1-96 session key (etype 17, 16 bytes).
+	sessionKey := types.EncryptionKey{
+		KeyType:  17,
+		KeyValue: []byte("0123456789abcdef"),
+	}
+	tt, _ := time.Parse(testdata.TEST_TIME_FORMAT, testdata.TEST_TIME)
+	auth := types.Authenticator{
+		CTime: tt,
+		Cusec: 123456,
+	}
+
+	rep, enc, err := NewAPRep(sessionKey, auth)
+	if err != nil {
+		t.Fatalf("NewAPRep error: %v", err)
+	}
+
+	assert.Equal(t, iana.PVNO, rep.PVNO)
+	assert.Equal(t, msgtype.KRB_AP_REP, rep.MsgType)
+	assert.Equal(t, sessionKey.KeyType, enc.Subkey.KeyType, "acceptor subkey enctype matches session key")
+	assert.Len(t, enc.Subkey.KeyValue, 16, "acceptor subkey has correct length for etype 17")
+	assert.NotZero(t, enc.SequenceNumber, "sequence number generated")
+	assert.True(t, auth.CTime.Equal(enc.CTime))
+	assert.Equal(t, auth.Cusec, enc.Cusec)
+
+	// EncAPRepPart decrypts under the session key with key usage 12 and
+	// round-trips to the same plaintext fields.
+	plain, err := crypto.DecryptEncPart(rep.EncPart, sessionKey, keyusage.AP_REP_ENCPART)
+	if err != nil {
+		t.Fatalf("DecryptEncPart: %v", err)
+	}
+	var decoded EncAPRepPart
+	if err := decoded.Unmarshal(plain); err != nil {
+		t.Fatalf("Unmarshal decrypted EncAPRepPart: %v", err)
+	}
+	assert.True(t, enc.CTime.Equal(decoded.CTime))
+	assert.Equal(t, enc.Cusec, decoded.Cusec)
+	assert.Equal(t, enc.Subkey.KeyType, decoded.Subkey.KeyType)
+	assert.Equal(t, enc.Subkey.KeyValue, decoded.Subkey.KeyValue)
+	assert.Equal(t, enc.SequenceNumber, decoded.SequenceNumber)
+}
+
+func TestNewAPRep_freshSubkeyAndSeqEachCall(t *testing.T) {
+	t.Parallel()
+	sessionKey := types.EncryptionKey{
+		KeyType:  17,
+		KeyValue: []byte("0123456789abcdef"),
+	}
+	tt, _ := time.Parse(testdata.TEST_TIME_FORMAT, testdata.TEST_TIME)
+	auth := types.Authenticator{CTime: tt, Cusec: 1}
+
+	_, e1, err := NewAPRep(sessionKey, auth)
+	if err != nil {
+		t.Fatalf("first NewAPRep: %v", err)
+	}
+	_, e2, err := NewAPRep(sessionKey, auth)
+	if err != nil {
+		t.Fatalf("second NewAPRep: %v", err)
+	}
+	assert.NotEqual(t, e1.Subkey.KeyValue, e2.Subkey.KeyValue, "acceptor subkey is fresh per call")
+	assert.NotEqual(t, e1.SequenceNumber, e2.SequenceNumber, "sequence number is fresh per call")
 }
 
 func TestEncAPRepPartMarshalRoundTrip_optionalsNULL(t *testing.T) {
