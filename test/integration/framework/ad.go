@@ -18,4 +18,9 @@ type ActiveDirectory interface {
 	// HTTPSPN returns the HTTP service principal name the fixture
 	// provisions, e.g. "HTTP/web.ad.example.com".
 	HTTPSPN() string
+
+	// GroupSID returns the SID string for a provisioned security group
+	// (e.g. "S-1-5-21-..."). The group name is the bare CN, without
+	// the domain prefix.
+	GroupSID(name string) (string, error)
 }

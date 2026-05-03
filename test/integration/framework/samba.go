@@ -37,8 +37,13 @@ const (
 
 const sambaHTTPSPN = "HTTP/web.ad.gokrb5"
 
-// adRealmTopology: two test users plus an HTTP service account for
-// the krbhttp acceptor.
+// PrivilegedUserGroupName is the security group used by integration
+// tests to verify PAC group-membership extraction. privileged_user is
+// a member; testuser1 and testuser2 are not.
+const PrivilegedUserGroupName = "PrivilegedUserGroup"
+
+// adRealmTopology: test users plus an HTTP service account for the
+// krbhttp acceptor.
 var adRealmTopology = Topology{
 	Realms: []RealmSpec{
 		{
@@ -46,6 +51,7 @@ var adRealmTopology = Topology{
 			Users: []UserSpec{
 				{Name: "testuser1", Password: SambaUserPassword, WithKeytab: true},
 				{Name: "testuser2", Password: SambaUserPassword, WithKeytab: true},
+				{Name: "privileged_user", Password: SambaUserPassword, WithKeytab: true},
 			},
 			Services: []ServiceSpec{
 				{
@@ -57,6 +63,17 @@ var adRealmTopology = Topology{
 	},
 }
 
+// adGroups lists security groups to provision into the AD realm and
+// the members to add to each.
+type adGroup struct {
+	Name    string
+	Members []string
+}
+
+var adGroups = []adGroup{
+	{Name: PrivilegedUserGroupName, Members: []string{"privileged_user"}},
+}
+
 type sambaAD struct {
 	topology  Topology
 	container testcontainers.Container
@@ -65,6 +82,7 @@ type sambaAD struct {
 	ldapPort  int
 	ldapsPort int
 	keytabs   map[string][]byte
+	groupSIDs map[string]string
 }
 
 // StartSambaAD starts a Samba AD-DC container and provisions
@@ -99,7 +117,12 @@ func StartSambaAD(ctx context.Context) (ActiveDirectory, func(), error) {
 		return nil, nil, fmt.Errorf("start Samba container: %w", err)
 	}
 
-	s := &sambaAD{topology: topo, container: c, keytabs: make(map[string][]byte)}
+	s := &sambaAD{
+		topology:  topo,
+		container: c,
+		keytabs:   make(map[string][]byte),
+		groupSIDs: make(map[string]string),
+	}
 	cleanup := func() {
 		_ = s.Close(context.Background())
 	}
@@ -213,7 +236,44 @@ func (s *sambaAD) provision(ctx context.Context) error {
 		}
 	}
 
+	for _, g := range adGroups {
+		if err := execIn(ctx, c, []string{"samba-tool", "group", "add", g.Name}); err != nil {
+			return fmt.Errorf("samba-tool group add %s: %w", g.Name, err)
+		}
+		if len(g.Members) > 0 {
+			if err := execIn(ctx, c, []string{
+				"samba-tool", "group", "addmembers", g.Name, strings.Join(g.Members, ","),
+			}); err != nil {
+				return fmt.Errorf("samba-tool group addmembers %s: %w", g.Name, err)
+			}
+		}
+		sid, err := lookupGroupSID(ctx, c, g.Name)
+		if err != nil {
+			return fmt.Errorf("look up SID for group %s: %w", g.Name, err)
+		}
+		s.groupSIDs[g.Name] = sid
+	}
+
 	return nil
+}
+
+// lookupGroupSID queries the local sam.ldb for a group's objectSid.
+// Returns the canonical "S-1-5-21-..." string.
+func lookupGroupSID(ctx context.Context, c testcontainers.Container, name string) (string, error) {
+	out, err := execInWithOutput(ctx, c, []string{
+		"ldbsearch", "-H", "/var/lib/samba/private/sam.ldb",
+		fmt.Sprintf("(&(objectClass=group)(cn=%s))", name), "objectSid",
+	})
+	if err != nil {
+		return "", err
+	}
+	for line := range strings.SplitSeq(out, "\n") {
+		line = strings.TrimSpace(line)
+		if rest, ok := strings.CutPrefix(line, "objectSid: "); ok {
+			return rest, nil
+		}
+	}
+	return "", fmt.Errorf("objectSid not found in ldbsearch output for %s: %s", name, out)
 }
 
 // exportKeytab runs samba-tool exportkeytab for principal, copies
@@ -334,6 +394,16 @@ func (s *sambaAD) LDAPEndpoint() (string, int)  { return s.ldapHost, s.ldapPort 
 func (s *sambaAD) LDAPSEndpoint() (string, int) { return s.ldapHost, s.ldapsPort }
 func (s *sambaAD) LDAPSPN() string              { return "ldap/" + dcHostname(s.Realm()) }
 func (s *sambaAD) HTTPSPN() string              { return sambaHTTPSPN }
+
+// GroupSID returns the SID for a security group provisioned by this
+// fixture. Returns an error if the group was not provisioned.
+func (s *sambaAD) GroupSID(name string) (string, error) {
+	sid, ok := s.groupSIDs[name]
+	if !ok {
+		return "", fmt.Errorf("group %q was not provisioned by this fixture", name)
+	}
+	return sid, nil
+}
 
 // dcHostname returns the DC's FQDN as Samba registers it during
 // provisioning: <sambaDCHostname>.<lowercased realm>.

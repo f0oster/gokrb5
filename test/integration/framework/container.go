@@ -22,3 +22,18 @@ func execIn(ctx context.Context, c testcontainers.Container, cmd []string) error
 	}
 	return nil
 }
+
+// execInWithOutput runs cmd inside c and returns its captured output.
+// Returns an error if the process exits non-zero, with the captured
+// output included in the error message.
+func execInWithOutput(ctx context.Context, c testcontainers.Container, cmd []string) (string, error) {
+	exitCode, reader, err := c.Exec(ctx, cmd, tcexec.Multiplexed())
+	if err != nil {
+		return "", fmt.Errorf("exec %v: %w", cmd, err)
+	}
+	out, _ := io.ReadAll(reader)
+	if exitCode != 0 {
+		return "", fmt.Errorf("%v exited %d: %s", cmd, exitCode, string(out))
+	}
+	return string(out), nil
+}

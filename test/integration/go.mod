@@ -6,6 +6,7 @@ replace github.com/f0oster/gokrb5 => ../..
 
 require (
 	github.com/f0oster/gokrb5 v0.0.0-00010101000000-000000000000
+	github.com/jcmturner/gofork v1.7.6
 	github.com/testcontainers/testcontainers-go v0.36.0
 )
 
@@ -33,7 +34,6 @@ require (
 	github.com/hashicorp/go-uuid v1.0.3 // indirect
 	github.com/jcmturner/aescts/v2 v2.0.0 // indirect
 	github.com/jcmturner/dnsutils/v2 v2.0.0 // indirect
-	github.com/jcmturner/gofork v1.7.6 // indirect
 	github.com/jcmturner/goidentity/v6 v6.0.1 // indirect
 	github.com/jcmturner/rpc/v2 v2.0.3 // indirect
 	github.com/klauspost/compress v1.17.4 // indirect
