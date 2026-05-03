@@ -237,17 +237,13 @@ func (pac *PACType) ProcessPACInfoBuffers(key types.EncryptionKey, l *log.Logger
 }
 
 func (pac *PACType) verify(key types.EncryptionKey) (bool, error) {
-	if pac.KerbValidationInfo == nil {
-		return false, errors.New("PAC Info Buffers does not contain a KerbValidationInfo")
-	}
+	// MS-PAC mandates only the Server and KDC signature buffers;
+	// KerbValidationInfo (§2.5) and ClientInfo (§2.7) are optional.
 	if pac.ServerChecksum == nil {
 		return false, errors.New("PAC Info Buffers does not contain a ServerChecksum")
 	}
 	if pac.KDCChecksum == nil {
 		return false, errors.New("PAC Info Buffers does not contain a KDCChecksum")
-	}
-	if pac.ClientInfo == nil {
-		return false, errors.New("PAC Info Buffers does not contain a ClientInfo")
 	}
 	etype, err := crypto.GetChksumEtype(int32(pac.ServerChecksum.SignatureType))
 	if err != nil {

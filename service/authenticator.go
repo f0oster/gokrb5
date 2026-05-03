@@ -65,8 +65,17 @@ func (a KRB5BasicAuthenticator) Authenticate() (i goidentity.Identity, ok bool, 
 		err = fmt.Errorf("error processing PAC: %v", err)
 		return
 	}
-	if isPAC {
-		// There is a valid PAC. Adding attributes to creds
+	if isPAC && pac.ClientInfo != nil {
+		// MS-PAC §2.7: PAC_CLIENT_INFO.Name must match the ticket's
+		// CName so a cross-realm KDC cannot graft a PAC minted for one
+		// principal onto a ticket for another.
+		expected := tkt.DecryptedEncPart.CName.PrincipalNameString()
+		if pac.ClientInfo.Name != expected {
+			err = fmt.Errorf("PAC ClientInfo name %q does not match ticket CName %q", pac.ClientInfo.Name, expected)
+			return
+		}
+	}
+	if isPAC && pac.KerbValidationInfo != nil {
 		cl.Credentials.SetADCredentials(credentials.ADCredentials{
 			GroupMembershipSIDs: pac.KerbValidationInfo.GetGroupMembershipSIDs(),
 			LogOnTime:           pac.KerbValidationInfo.LogOnTime.Time(),
