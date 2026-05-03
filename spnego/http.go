@@ -293,7 +293,7 @@ func SPNEGOKRB5Authenticate(inner http.Handler, kt *keytab.Keytab, settings ...f
 			if err != nil {
 				return
 			}
-			spnegoResponseAcceptCompleted(spnego, w, "%s %s@%s - SPNEGO authentication succeeded", r.RemoteAddr, id.UserName(), id.Domain())
+			spnegoResponseAcceptCompleted(spnego, w, st.ResponseToken(), "%s %s@%s - SPNEGO authentication succeeded", r.RemoteAddr, id.UserName(), id.Domain())
 			// Add the identity to the context and serve the inner/wrapped handler
 			inner.ServeHTTP(w, goidentity.AddToHTTPRequestContext(id, r))
 			return
@@ -389,9 +389,34 @@ func spnegoResponseReject(s *SPNEGO, w http.ResponseWriter, format string, v ...
 	http.Error(w, UnauthorizedMsg, http.StatusUnauthorized)
 }
 
-func spnegoResponseAcceptCompleted(s *SPNEGO, w http.ResponseWriter, format string, v ...interface{}) {
+func spnegoResponseAcceptCompleted(s *SPNEGO, w http.ResponseWriter, responseMechToken []byte, format string, v ...interface{}) {
 	s.Log(format, v...)
-	w.Header().Set(HTTPHeaderAuthResponse, spnegoNegTokenRespKRBAcceptCompleted)
+	header, err := acceptCompletedResponseHeader(responseMechToken)
+	if err != nil {
+		spnegoInternalServerError(s, w, "SPNEGO could not build NegTokenResp: %v", err)
+		return
+	}
+	w.Header().Set(HTTPHeaderAuthResponse, header)
+}
+
+// acceptCompletedResponseHeader returns the WWW-Authenticate header value
+// for a successful SPNEGO authentication. When responseMechToken is nil
+// it returns the static accept-completed token. When non-nil (mutual
+// auth) it embeds the AP-REP MechToken in a fresh NegTokenResp.
+func acceptCompletedResponseHeader(responseMechToken []byte) (string, error) {
+	if responseMechToken == nil {
+		return spnegoNegTokenRespKRBAcceptCompleted, nil
+	}
+	resp := NegTokenResp{
+		NegState:      asn1.Enumerated(NegStateAcceptCompleted),
+		SupportedMech: gssapi.OIDKRB5.OID(),
+		ResponseToken: responseMechToken,
+	}
+	b, err := resp.Marshal()
+	if err != nil {
+		return "", err
+	}
+	return "Negotiate " + base64.StdEncoding.EncodeToString(b), nil
 }
 
 func spnegoInternalServerError(s *SPNEGO, w http.ResponseWriter, format string, v ...interface{}) {

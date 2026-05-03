@@ -11,6 +11,7 @@ import (
 	"github.com/f0oster/gokrb5/client"
 	"github.com/f0oster/gokrb5/crypto"
 	"github.com/f0oster/gokrb5/gssapi"
+	"github.com/f0oster/gokrb5/iana/flags"
 	"github.com/f0oster/gokrb5/iana/msgtype"
 	"github.com/f0oster/gokrb5/messages"
 	"github.com/f0oster/gokrb5/service"
@@ -39,13 +40,31 @@ type KRB5Token struct {
 	// token is built via NewKRB5TokenAPREQ or NewKRB5TokenAPREQWithBindings.
 	// Unset for tokens parsed from the wire.
 	Authenticator types.Authenticator
-	settings     *service.Settings
+	// AcceptorSubkey is the subkey placed in EncAPRepPart of an AP-REP
+	// produced by Verify when the initiator requested mutual auth. It is
+	// the per-message keying material for the established context per
+	// RFC 4121 §4.2.5; MS-KILE §3.1.1.2 mandates it for AES.
+	AcceptorSubkey types.EncryptionKey
+	// AcceptorSeqNumber is the sequence number placed in EncAPRepPart of
+	// the AP-REP produced by Verify; the initiator uses it to seed
+	// seq_recv per RFC 4121 §4.2.1.
+	AcceptorSeqNumber int64
+	settings *service.Settings
 	// sentAuth and sessionKey are set by SetAPRepVerification before
 	// Verify is called on an AP-REP token. Without them Verify cannot
 	// perform the RFC 4120 3.2.4 ctime/cusec check.
-	sentAuth   types.Authenticator
-	sessionKey types.EncryptionKey
-	context    context.Context
+	sentAuth      types.Authenticator
+	sessionKey    types.EncryptionKey
+	responseToken []byte
+	context       context.Context
+}
+
+// ResponseToken returns the GSS MechToken bytes for the AP-REP that
+// Verify produced when the initiator requested mutual authentication.
+// Returns nil for AP-REQ tokens without mutual auth or for any other
+// token type.
+func (m *KRB5Token) ResponseToken() []byte {
+	return m.responseToken
 }
 
 // SetAPRepVerification provides the inputs required to verify an AP-REP
@@ -73,7 +92,10 @@ func (m *KRB5Token) Marshal() ([]byte, error) {
 			return []byte{}, fmt.Errorf("error marshalling AP_REQ for MechToken: %v", err)
 		}
 	case TOK_ID_KRB_AP_REP:
-		return []byte{}, errors.New("marshal of AP_REP GSSAPI MechToken not supported by gokrb5")
+		tb, err = m.APRep.Marshal()
+		if err != nil {
+			return []byte{}, fmt.Errorf("error marshalling AP_REP for MechToken: %v", err)
+		}
 	case TOK_ID_KRB_ERROR:
 		return []byte{}, errors.New("marshal of KRB_ERROR GSSAPI MechToken not supported by gokrb5")
 	}
@@ -136,6 +158,11 @@ func (m *KRB5Token) Verify() (bool, gssapi.Status) {
 		if !ok {
 			return false, gssapi.Status{Code: gssapi.StatusDefectiveCredential, Message: "KRB5_AP_REQ token not valid"}
 		}
+		if types.IsFlagSet(&m.APReq.APOptions, flags.APOptionMutualRequired) {
+			if err := m.buildAPRep(); err != nil {
+				return false, gssapi.Status{Code: gssapi.StatusFailure, Message: err.Error()}
+			}
+		}
 		m.context = context.Background()
 		m.context = context.WithValue(m.context, ctxCredentials, creds)
 		return true, gssapi.Status{Code: gssapi.StatusComplete}
@@ -188,6 +215,31 @@ func (m *KRB5Token) IsKRBError() bool {
 // Context returns the KRB5 token's context which will contain any verify user identity information.
 func (m *KRB5Token) Context() context.Context {
 	return m.context
+}
+
+// buildAPRep constructs the AP-REP for an already-verified AP-REQ that
+// requested mutual authentication. It populates m.APRep, m.AcceptorSubkey,
+// m.AcceptorSeqNumber, and m.responseToken (the GSS MechToken bytes).
+func (m *KRB5Token) buildAPRep() error {
+	rep, enc, err := messages.NewAPRep(m.APReq.Ticket.DecryptedEncPart.Key, m.APReq.Authenticator)
+	if err != nil {
+		return fmt.Errorf("could not build AP-REP: %w", err)
+	}
+	tb, _ := hex.DecodeString(TOK_ID_KRB_AP_REP)
+	out := KRB5Token{
+		OID:   gssapi.OIDKRB5.OID(),
+		tokID: tb,
+		APRep: rep,
+	}
+	mtb, err := out.Marshal()
+	if err != nil {
+		return fmt.Errorf("could not marshal AP-REP MechToken: %w", err)
+	}
+	m.APRep = rep
+	m.AcceptorSubkey = enc.Subkey
+	m.AcceptorSeqNumber = enc.SequenceNumber
+	m.responseToken = mtb
+	return nil
 }
 
 // NewKRB5TokenAPREQ creates a new KRB5 AP-REQ token without channel

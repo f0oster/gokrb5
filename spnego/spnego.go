@@ -212,3 +212,14 @@ func (s *SPNEGOToken) Verify() (bool, gssapi.Status) {
 func (s *SPNEGOToken) Context() context.Context {
 	return s.context
 }
+
+// ResponseToken returns the GSS MechToken bytes the server should
+// embed in its NegTokenResp when the initiator requested mutual auth.
+// Returns nil when no AP-REP was produced (NegTokenResp tokens, or
+// AP-REQ tokens without mutual auth).
+func (s *SPNEGOToken) ResponseToken() []byte {
+	if !s.Init {
+		return nil
+	}
+	return s.NegTokenInit.ResponseToken()
+}

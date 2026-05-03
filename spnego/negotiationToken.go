@@ -153,6 +153,20 @@ func (n *NegTokenInit) Context() context.Context {
 	return nil
 }
 
+// ResponseToken returns the GSS MechToken bytes for an outbound AP-REP
+// when the wrapped KRB5 mech produced one during Verify (the initiator
+// requested mutual auth). Returns nil when there is nothing to send.
+func (n *NegTokenInit) ResponseToken() []byte {
+	if n.mechToken == nil {
+		return nil
+	}
+	mt, ok := n.mechToken.(*KRB5Token)
+	if !ok {
+		return nil
+	}
+	return mt.ResponseToken()
+}
+
 // Marshal a Resp/Targ negotiation token
 func (n *NegTokenResp) Marshal() ([]byte, error) {
 	m := marshalNegTokenResp{
