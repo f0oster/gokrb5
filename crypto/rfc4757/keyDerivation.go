@@ -1,35 +1,25 @@
 package rfc4757
 
 import (
-	"bytes"
-	"encoding/hex"
-	"errors"
-	"fmt"
-	"io"
+	"unicode/utf16"
 
 	"golang.org/x/crypto/md4"
 )
 
-// StringToKey returns a key derived from the string provided according to the definition in RFC 4757.
-func StringToKey(secret string) ([]byte, error) {
-	b := make([]byte, len(secret)*2, len(secret)*2)
-	for i, r := range secret {
-		u := fmt.Sprintf("%04x", r)
-		c, err := hex.DecodeString(u)
-		if err != nil {
-			return []byte{}, errors.New("character could not be encoded")
-		}
-		// Swap round the two bytes to make little endian as we put into byte slice
-		b[2*i] = c[1]
-		b[2*i+1] = c[0]
+// StringToKey derives an RC4-HMAC key from the password per RFC 4757 §4:
+// MD4 of the password encoded as UTF-16 little-endian. Code points above
+// the BMP are encoded as surrogate pairs by unicode/utf16; invalid code
+// points are replaced with U+FFFD.
+func StringToKey(secret string) []byte {
+	u16 := utf16.Encode([]rune(secret))
+	b := make([]byte, len(u16)*2)
+	for i, c := range u16 {
+		b[2*i] = byte(c)
+		b[2*i+1] = byte(c >> 8)
 	}
-	r := bytes.NewReader(b)
 	h := md4.New()
-	_, err := io.Copy(h, r)
-	if err != nil {
-		return []byte{}, err
-	}
-	return h.Sum(nil), nil
+	h.Write(b)
+	return h.Sum(nil)
 }
 
 func deriveKeys(key, checksum []byte, usage uint32, export bool) (k1, k2, k3 []byte) {

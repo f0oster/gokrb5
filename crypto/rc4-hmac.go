@@ -70,7 +70,7 @@ func (e RC4HMAC) GetCypherBlockBitLength() int {
 
 // StringToKey returns a key derived from the string provided.
 func (e RC4HMAC) StringToKey(secret string, salt string, s2kparams string) ([]byte, error) {
-	return rfc4757.StringToKey(secret)
+	return rfc4757.StringToKey(secret), nil
 }
 
 // RandomToKey returns a key from the bytes provided.
