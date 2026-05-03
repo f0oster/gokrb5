@@ -2,6 +2,7 @@ package gssapi
 
 import (
 	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -497,5 +498,142 @@ func TestAcceptor_Accept_ExpiredTicket(t *testing.T) {
 		assert.Equal(t, errorcode.KRB_AP_ERR_TKT_EXPIRED, kerr.ErrorCode, "Error code not as expected")
 	} else {
 		t.Fatalf("Error is not a KRBError: %v", err)
+	}
+}
+
+// gssAuthenticatorWithBindings builds an authenticator with a GSS
+// checksum that hashes the provided ChannelBindings. Pass nil bindings
+// to leave the Bnd field zero (initiator did not request CBs).
+func gssAuthenticatorWithBindings(t *testing.T, creds credentials.Credentials, bindings *ChannelBindings) types.Authenticator {
+	t.Helper()
+	auth, err := NewGSSAuthenticator(&creds, []int{ContextFlagInteg}, bindings, nil)
+	if err != nil {
+		t.Fatalf("NewGSSAuthenticator: %v", err)
+	}
+	if err := auth.GenerateSeqNumberAndSubKey(18, 32); err != nil {
+		t.Fatalf("GenerateSeqNumberAndSubKey: %v", err)
+	}
+	return auth
+}
+
+func newTestTicket(t *testing.T, kt *keytab.Keytab, cl *client.Client) (messages.Ticket, types.EncryptionKey) {
+	t.Helper()
+	sname := types.PrincipalName{
+		NameType:   nametype.KRB_NT_PRINCIPAL,
+		NameString: []string{"HTTP", "host.test.gokrb5"},
+	}
+	st := time.Now().UTC()
+	tkt, sessionKey, err := messages.NewTicket(cl.Credentials.CName(), cl.Credentials.Domain(),
+		sname, "TEST.GOKRB5",
+		types.NewKrbFlags(),
+		kt,
+		18,
+		1,
+		st,
+		st,
+		st.Add(time.Duration(24)*time.Hour),
+		st.Add(time.Duration(48)*time.Hour),
+	)
+	if err != nil {
+		t.Fatalf("NewTicket: %v", err)
+	}
+	return tkt, sessionKey
+}
+
+func TestAcceptor_Accept_ChannelBindings_Match(t *testing.T) {
+	t.Parallel()
+	cl := getTestClient()
+	b, _ := hex.DecodeString(testdata.HTTP_KEYTAB)
+	kt := keytab.New()
+	kt.Unmarshal(b)
+	tkt, sessionKey := newTestTicket(t, kt, cl)
+
+	cb := &ChannelBindings{ApplicationData: []byte("tls-server-end-point:abc123")}
+	apReq, err := messages.NewAPReq(tkt, sessionKey, gssAuthenticatorWithBindings(t, *cl.Credentials, cb))
+	if err != nil {
+		t.Fatalf("NewAPReq: %v", err)
+	}
+
+	h, _ := types.GetHostAddress("127.0.0.1:1234")
+	acc := NewAcceptor(kt, WithReplayCache(freshReplayCache(t)))
+	if _, err := acc.Accept(mechTokenFromAPReq(t, apReq),
+		WithRemoteAddress(h),
+		WithExpectedChannelBindings(cb),
+	); err != nil {
+		t.Fatalf("Accept with matching CB failed: %v", err)
+	}
+}
+
+func TestAcceptor_Accept_ChannelBindings_Mismatch(t *testing.T) {
+	t.Parallel()
+	cl := getTestClient()
+	b, _ := hex.DecodeString(testdata.HTTP_KEYTAB)
+	kt := keytab.New()
+	kt.Unmarshal(b)
+	tkt, sessionKey := newTestTicket(t, kt, cl)
+
+	initiatorCB := &ChannelBindings{ApplicationData: []byte("tls-server-end-point:abc")}
+	apReq, err := messages.NewAPReq(tkt, sessionKey, gssAuthenticatorWithBindings(t, *cl.Credentials, initiatorCB))
+	if err != nil {
+		t.Fatalf("NewAPReq: %v", err)
+	}
+
+	expected := &ChannelBindings{ApplicationData: []byte("tls-server-end-point:xyz")}
+	h, _ := types.GetHostAddress("127.0.0.1:1234")
+	acc := NewAcceptor(kt, WithReplayCache(freshReplayCache(t)))
+	_, err = acc.Accept(mechTokenFromAPReq(t, apReq),
+		WithRemoteAddress(h),
+		WithExpectedChannelBindings(expected),
+	)
+	if !errors.Is(err, ErrChannelBindingMismatch) {
+		t.Fatalf("err = %v, want ErrChannelBindingMismatch", err)
+	}
+}
+
+func TestAcceptor_Accept_ChannelBindings_InitiatorOmitted(t *testing.T) {
+	t.Parallel()
+	cl := getTestClient()
+	b, _ := hex.DecodeString(testdata.HTTP_KEYTAB)
+	kt := keytab.New()
+	kt.Unmarshal(b)
+	tkt, sessionKey := newTestTicket(t, kt, cl)
+
+	// Initiator does not pass bindings: NewGSSAuthenticator(nil) leaves
+	// the Bnd field all zero.
+	apReq, err := messages.NewAPReq(tkt, sessionKey, gssAuthenticatorWithBindings(t, *cl.Credentials, nil))
+	if err != nil {
+		t.Fatalf("NewAPReq: %v", err)
+	}
+
+	expected := &ChannelBindings{ApplicationData: []byte("tls-server-end-point:abc")}
+	h, _ := types.GetHostAddress("127.0.0.1:1234")
+	acc := NewAcceptor(kt, WithReplayCache(freshReplayCache(t)))
+	_, err = acc.Accept(mechTokenFromAPReq(t, apReq),
+		WithRemoteAddress(h),
+		WithExpectedChannelBindings(expected),
+	)
+	if !errors.Is(err, ErrChannelBindingMismatch) {
+		t.Fatalf("err = %v, want ErrChannelBindingMismatch", err)
+	}
+}
+
+func TestAcceptor_Accept_ChannelBindings_NotEnforced(t *testing.T) {
+	t.Parallel()
+	cl := getTestClient()
+	b, _ := hex.DecodeString(testdata.HTTP_KEYTAB)
+	kt := keytab.New()
+	kt.Unmarshal(b)
+	tkt, sessionKey := newTestTicket(t, kt, cl)
+
+	cb := &ChannelBindings{ApplicationData: []byte("anything")}
+	apReq, err := messages.NewAPReq(tkt, sessionKey, gssAuthenticatorWithBindings(t, *cl.Credentials, cb))
+	if err != nil {
+		t.Fatalf("NewAPReq: %v", err)
+	}
+
+	h, _ := types.GetHostAddress("127.0.0.1:1234")
+	acc := NewAcceptor(kt, WithReplayCache(freshReplayCache(t)))
+	if _, err := acc.Accept(mechTokenFromAPReq(t, apReq), WithRemoteAddress(h)); err != nil {
+		t.Fatalf("Accept without WithExpectedChannelBindings should ignore initiator bindings: %v", err)
 	}
 }

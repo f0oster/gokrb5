@@ -108,6 +108,7 @@ func NewAcceptor(kt *keytab.Keytab, opts ...AcceptorOption) *Acceptor {
 // acceptCall holds per-Accept-call state populated by AcceptOptions.
 type acceptCall struct {
 	remoteAddr types.HostAddress
+	expectedCB *ChannelBindings
 }
 
 // AcceptOption configures a single Accept call.
@@ -119,6 +120,13 @@ type AcceptOption func(*acceptCall)
 // effect.
 func WithRemoteAddress(h types.HostAddress) AcceptOption {
 	return func(c *acceptCall) { c.remoteAddr = h }
+}
+
+// WithExpectedChannelBindings makes Accept verify the initiator's
+// hashed channel bindings against MD5(cb.Marshal()). Mismatch returns
+// ErrChannelBindingMismatch.
+func WithExpectedChannelBindings(cb *ChannelBindings) AcceptOption {
+	return func(c *acceptCall) { c.expectedCB = cb }
 }
 
 // Acceptance carries the result of a successful Accept.
@@ -166,6 +174,12 @@ func (a *Acceptor) Accept(mechToken []byte, opts ...AcceptOption) (*Acceptance, 
 	creds, err := verifyAPREQ(&apReq, a, call)
 	if err != nil {
 		return nil, err
+	}
+
+	if call.expectedCB != nil {
+		if err := verifyChannelBindings(&apReq, call.expectedCB); err != nil {
+			return nil, err
+		}
 	}
 
 	mutualAuth := types.IsFlagSet(&apReq.APOptions, flags.APOptionMutualRequired)
