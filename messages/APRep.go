@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/jcmturner/gofork/encoding/asn1"
+	"github.com/f0oster/gokrb5/asn1tools"
 	"github.com/f0oster/gokrb5/iana/asnAppTag"
 	"github.com/f0oster/gokrb5/iana/msgtype"
 	"github.com/f0oster/gokrb5/krberror"
@@ -46,4 +47,22 @@ func (a *EncAPRepPart) Unmarshal(b []byte) error {
 		return krberror.Errorf(err, krberror.EncodingError, "AP_REP unmarshal error")
 	}
 	return nil
+}
+
+// Marshal APRep to ASN.1 DER bytes wrapped in the KRB_AP_REP application tag.
+func (a *APRep) Marshal() ([]byte, error) {
+	b, err := asn1.Marshal(*a)
+	if err != nil {
+		return nil, krberror.Errorf(err, krberror.EncodingError, "marshaling error of AP_REP")
+	}
+	return asn1tools.AddASNAppTag(b, asnAppTag.APREP), nil
+}
+
+// Marshal EncAPRepPart to ASN.1 DER bytes wrapped in the EncAPRepPart application tag.
+func (a *EncAPRepPart) Marshal() ([]byte, error) {
+	b, err := asn1.Marshal(*a)
+	if err != nil {
+		return nil, krberror.Errorf(err, krberror.EncodingError, "marshaling error of EncAPRepPart")
+	}
+	return asn1tools.AddASNAppTag(b, asnAppTag.EncAPRepPart), nil
 }
