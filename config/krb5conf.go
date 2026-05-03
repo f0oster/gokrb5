@@ -67,7 +67,8 @@ type LibDefaults struct {
 	K5LoginAuthoritative    bool           //default false
 	K5LoginDirectory        string         //default user's home directory. Must be owned by the user or root
 	KDCDefaultOptions       asn1.BitString //default 0x00000010 (KDC_OPT_RENEWABLE_OK)
-	KDCTimeSync             int            //default 1
+	KDCTimeSync             int            //default 1. Parsed but not applied; TODO: implement MIT 0/1/2 semantics
+
 	//kdc_req_checksum_type int //unlikely to implement as for very old KDCs
 	NoAddresses         bool     //default true
 	PermittedEnctypes   []string //default mitDefaultEnctypes
