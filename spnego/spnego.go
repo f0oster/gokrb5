@@ -9,6 +9,7 @@ import (
 	"github.com/jcmturner/gofork/encoding/asn1"
 	"github.com/f0oster/gokrb5/asn1tools"
 	"github.com/f0oster/gokrb5/client"
+	"github.com/f0oster/gokrb5/credentials"
 	"github.com/f0oster/gokrb5/gssapi"
 	"github.com/f0oster/gokrb5/keytab"
 	"github.com/f0oster/gokrb5/service"
@@ -234,6 +235,27 @@ func (s *SPNEGOToken) SecurityContext() *gssapi.SecurityContext {
 	}
 	if mt, ok := s.NegTokenInit.mechToken.(*KRB5Token); ok {
 		return mt.SecurityContext()
+	}
+	return nil
+}
+
+// Credentials returns the verified client credentials from a
+// successful AP-REQ. Returns nil for response tokens, unverified
+// tokens, or non-Kerberos mechs.
+func (s *SPNEGOToken) Credentials() *credentials.Credentials {
+	if !s.Init {
+		return nil
+	}
+	mt, ok := s.NegTokenInit.mechToken.(*KRB5Token)
+	if !ok {
+		return nil
+	}
+	c := mt.Context()
+	if c == nil {
+		return nil
+	}
+	if v, ok := c.Value(ctxCredentials).(*credentials.Credentials); ok {
+		return v
 	}
 	return nil
 }
