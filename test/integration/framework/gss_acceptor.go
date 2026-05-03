@@ -19,10 +19,11 @@ import (
 // by ReplyFunc. Wire framing is gssapi.LengthPrefix4. Per-connection
 // failures are pushed to Errors() and the connection is closed.
 type GSSAcceptor struct {
-	listener net.Listener
-	acceptor *spnego.Acceptor
-	reply    ReplyFunc
-	errs     chan error
+	listener   net.Listener
+	acceptor   *spnego.Acceptor
+	reply      ReplyFunc
+	acceptOpts []gssapi.AcceptOption
+	errs       chan error
 
 	mu     sync.Mutex
 	closed bool
@@ -106,7 +107,7 @@ func (a *GSSAcceptor) serve() {
 
 func (a *GSSAcceptor) handle(conn net.Conn) {
 	defer conn.Close()
-	sess, err := a.acceptor.AcceptOn(conn, gssapi.LengthPrefix4)
+	sess, err := a.acceptor.AcceptOn(conn, gssapi.LengthPrefix4, a.acceptOpts...)
 	if err != nil {
 		a.pushErr(fmt.Errorf("accept: %w", err))
 		return
