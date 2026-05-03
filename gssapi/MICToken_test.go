@@ -219,9 +219,13 @@ func TestMICToken_AcceptorSubkeyFlagRoundTrip(t *testing.T) {
 
 func TestNewInitiatorMICTokenSignatureAndMarshalling(t *testing.T) {
 	t.Parallel()
-	bytes, _ := hex.DecodeString(testMICPayload)
-	token, tErr := NewInitiatorMICToken(bytes, getSessionKey())
+	payload, _ := hex.DecodeString(testMICPayload)
+	token := &MICToken{
+		Flags:     0x00,
+		SndSeqNum: 0,
+		Payload:   payload,
+	}
+	assert.Nil(t, token.SetChecksum(getSessionKey(), keyusage.GSSAPI_INITIATOR_SIGN))
 	token.Payload = nil
-	assert.Nil(t, tErr, "Unexpected error.")
 	assert.Equal(t, getMICResponseReference(), token, "Token failed to be marshalled to the expected bytes.")
 }

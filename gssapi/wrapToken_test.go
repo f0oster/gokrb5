@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"testing"
 
+	"github.com/f0oster/gokrb5/crypto"
 	"github.com/f0oster/gokrb5/iana/keyusage"
 	"github.com/f0oster/gokrb5/types"
 	"github.com/stretchr/testify/assert"
@@ -185,8 +186,17 @@ func TestMarshal_Failures(t *testing.T) {
 
 func TestNewInitiatorTokenSignatureAndMarshalling(t *testing.T) {
 	t.Parallel()
-	token, tErr := NewInitiatorWrapToken([]byte{0x01, 0x01, 0x00, 0x00}, getSessionKey())
-	assert.Nil(t, tErr, "Unexpected error.")
+	key := getSessionKey()
+	encType, err := crypto.GetEtype(key.KeyType)
+	assert.Nil(t, err)
+	token := &WrapToken{
+		Flags:     0x00,
+		EC:        uint16(encType.GetHMACBitLength() / 8),
+		RRC:       0,
+		SndSeqNum: 0,
+		Payload:   []byte{0x01, 0x01, 0x00, 0x00},
+	}
+	assert.Nil(t, token.SetCheckSum(key, keyusage.GSSAPI_INITIATOR_SEAL))
 	assert.Equal(t, getResponseReference(), token, "Token failed to be marshalled to the expected bytes.")
 }
 

@@ -9,7 +9,6 @@ import (
 	"fmt"
 
 	"github.com/f0oster/gokrb5/crypto"
-	"github.com/f0oster/gokrb5/iana/keyusage"
 	"github.com/f0oster/gokrb5/types"
 )
 
@@ -160,20 +159,3 @@ func (mt *MICToken) Unmarshal(b []byte, expectFromAcceptor bool) error {
 	return nil
 }
 
-// NewInitiatorMICToken builds a new initiator token (acceptor flag will be set to 0) and computes the authenticated checksum.
-// Other flags are set to 0.
-// Note that in certain circumstances you may need to provide a sequence number that has been defined earlier.
-// This is currently not supported.
-func NewInitiatorMICToken(payload []byte, key types.EncryptionKey) (*MICToken, error) {
-	token := MICToken{
-		Flags:     0x00,
-		SndSeqNum: 0,
-		Payload:   payload,
-	}
-
-	if err := token.SetChecksum(key, keyusage.GSSAPI_INITIATOR_SIGN); err != nil {
-		return nil, err
-	}
-
-	return &token, nil
-}

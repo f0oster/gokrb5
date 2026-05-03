@@ -9,7 +9,6 @@ import (
 	"fmt"
 
 	"github.com/f0oster/gokrb5/crypto"
-	"github.com/f0oster/gokrb5/iana/keyusage"
 	"github.com/f0oster/gokrb5/types"
 )
 
@@ -375,28 +374,3 @@ func (wt *WrapToken) OpenSealed(key types.EncryptionKey, keyUsage uint32) ([]byt
 	return plain[:payloadEnd], nil
 }
 
-// NewInitiatorWrapToken builds a new initiator token (acceptor flag will be set to 0) and computes the authenticated checksum.
-// Other flags are set to 0, and the RRC and sequence number are initialized to 0.
-// Note that in certain circumstances you may need to provide a sequence number that has been defined earlier.
-// This is currently not supported.
-func NewInitiatorWrapToken(payload []byte, key types.EncryptionKey) (*WrapToken, error) {
-	encType, err := crypto.GetEtype(key.KeyType)
-	if err != nil {
-		return nil, err
-	}
-
-	token := WrapToken{
-		Flags: 0x00, // all zeroed out (this is a token sent by the initiator)
-		// Checksum size: length of output of the HMAC function, in bytes.
-		EC:        uint16(encType.GetHMACBitLength() / 8),
-		RRC:       0,
-		SndSeqNum: 0,
-		Payload:   payload,
-	}
-
-	if err := token.SetCheckSum(key, keyusage.GSSAPI_INITIATOR_SEAL); err != nil {
-		return nil, err
-	}
-
-	return &token, nil
-}
