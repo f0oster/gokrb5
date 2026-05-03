@@ -285,21 +285,21 @@ func (cl *Client) Diagnostics(w io.Writer) error {
 			}
 		}
 	}
-	udpCnt, udpKDC, err := cl.Config.GetKDCs(cl.Credentials.Realm(), false)
+	udpKDC, err := cl.Config.GetKDCs(cl.Credentials.Realm(), false)
 	if err != nil {
 		errs = append(errs, fmt.Sprintf("error when resolving KDCs for UDP communication: %v", err))
 	}
-	if udpCnt < 1 {
+	if len(udpKDC) < 1 {
 		errs = append(errs, "no KDCs resolved for communication via UDP.")
 	} else {
 		b, _ := json.MarshalIndent(&udpKDC, "", "  ")
 		fmt.Fprintf(w, "UDP KDCs: %s\n", string(b))
 	}
-	tcpCnt, tcpKDC, err := cl.Config.GetKDCs(cl.Credentials.Realm(), true)
+	tcpKDC, err := cl.Config.GetKDCs(cl.Credentials.Realm(), true)
 	if err != nil {
 		errs = append(errs, fmt.Sprintf("error when resolving KDCs for TCP communication: %v", err))
 	}
-	if tcpCnt < 1 {
+	if len(tcpKDC) < 1 {
 		errs = append(errs, "no KDCs resolved for communication via TCP.")
 	} else {
 		b, _ := json.MarshalIndent(&tcpKDC, "", "  ")

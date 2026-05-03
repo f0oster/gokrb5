@@ -28,15 +28,15 @@ func TestConfig_GetKDCsUsesConfiguredKDC(t *testing.T) {
 		t.Fatalf("Error loading config: %v", err)
 	}
 
-	count, kdcs, err := c.GetKDCs("TEST.GOKRB5", false)
+	kdcs, err := c.GetKDCs("TEST.GOKRB5", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 {
-		t.Fatalf("expected 1 but received %d", count)
+	if len(kdcs) != 1 {
+		t.Fatalf("expected 1 but received %d", len(kdcs))
 	}
-	if kdcs[1] != "kdc2b.test.gokrb5:88" {
-		t.Fatalf("expected kdc2b.test.gokrb5:88 but received %s", kdcs[1])
+	if kdcs[0] != "kdc2b.test.gokrb5:88" {
+		t.Fatalf("expected kdc2b.test.gokrb5:88 but received %s", kdcs[0])
 	}
 }
 
@@ -51,12 +51,11 @@ func TestResolveKDC(t *testing.T) {
 	// KDCs when they're not provided and we should be looking them up.
 	c.LibDefaults.DNSLookupKDC = true
 	c.Realms = make([]Realm, 0)
-	count, res, err := c.GetKDCs(c.LibDefaults.DefaultRealm, true)
+	res, err := c.GetKDCs(c.LibDefaults.DefaultRealm, true)
 	if err != nil {
 		t.Errorf("error resolving KDC via DNS TCP: %v", err)
 	}
-	assert.Equal(t, 5, count, "Number of SRV records not as expected: %v", res)
-	assert.Equal(t, count, len(res), "Map size does not match: %v", res)
+	assert.Equal(t, 5, len(res), "Number of SRV records not as expected: %v", res)
 	expected := []string{
 		"kdc.test.gokrb5:88",
 		"kdc1a.test.gokrb5:88",
@@ -82,7 +81,7 @@ func TestResolveKDCNoDNS(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.LibDefaults.DNSLookupKDC = false
-	_, res, err := c.GetKDCs(c.LibDefaults.DefaultRealm, true)
+	res, err := c.GetKDCs(c.LibDefaults.DefaultRealm, true)
 	if err != nil {
 		t.Errorf("error resolving KDCs from config: %v", err)
 	}

@@ -50,7 +50,7 @@ func (cl *Client) ChangePasswd(newPasswd string) (bool, error) {
 }
 
 func (cl *Client) sendToKPasswd(msg kadmin.Request) (r kadmin.Reply, err error) {
-	_, kps, err := cl.Config.GetKpasswdServers(cl.Credentials.Domain(), true)
+	kps, err := cl.Config.GetKpasswdServers(cl.Credentials.Domain(), true)
 	if err != nil {
 		return
 	}

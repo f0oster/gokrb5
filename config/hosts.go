@@ -10,13 +10,11 @@ import (
 	"github.com/jcmturner/dnsutils/v2"
 )
 
-// GetKDCs returns the count of KDCs available and a map of KDC host names keyed on preference order.
-func (c *Config) GetKDCs(realm string, tcp bool) (int, map[int]string, error) {
+// GetKDCs returns KDC host names in preference order for the realm.
+func (c *Config) GetKDCs(realm string, tcp bool) ([]string, error) {
 	if realm == "" {
 		realm = c.LibDefaults.DefaultRealm
 	}
-	kdcs := make(map[int]string)
-	var count int
 
 	// Get the KDCs from the krb5.conf.
 	var ks []string
@@ -26,16 +24,13 @@ func (c *Config) GetKDCs(realm string, tcp bool) (int, map[int]string, error) {
 		}
 		ks = r.KDC
 	}
-	count = len(ks)
 
-	if count > 0 {
-		// Order the kdcs randomly for preference.
-		kdcs = randServOrder(ks)
-		return count, kdcs, nil
+	if len(ks) > 0 {
+		return randServOrder(ks), nil
 	}
 
 	if !c.LibDefaults.DNSLookupKDC {
-		return count, kdcs, fmt.Errorf("no KDCs defined in configuration for realm %s", realm)
+		return nil, fmt.Errorf("no KDCs defined in configuration for realm %s", realm)
 	}
 
 	// Use DNS to resolve kerberos SRV records.
@@ -45,97 +40,91 @@ func (c *Config) GetKDCs(realm string, tcp bool) (int, map[int]string, error) {
 	}
 	index, addrs, err := dnsutils.OrderedSRV("kerberos", proto, realm)
 	if err != nil {
-		return count, kdcs, err
+		return nil, err
 	}
 	if len(addrs) < 1 {
-		return count, kdcs, fmt.Errorf("no KDC SRV records found for realm %s", realm)
+		return nil, fmt.Errorf("no KDC SRV records found for realm %s", realm)
 	}
-	count = index
-	for k, v := range addrs {
-		kdcs[k] = strings.TrimRight(v.Target, ".") + ":" + strconv.Itoa(int(v.Port))
-	}
-	return count, kdcs, nil
+	return srvAddrsInOrder(index, addrs), nil
 }
 
-// GetKpasswdServers returns the count of kpasswd servers available and a map of kpasswd host names keyed on preference order.
+// GetKpasswdServers returns kpasswd server host names in preference order for the realm.
 // https://web.mit.edu/kerberos/krb5-latest/doc/admin/conf_files/krb5_conf.html#realms - see kpasswd_server section
-func (c *Config) GetKpasswdServers(realm string, tcp bool) (int, map[int]string, error) {
-	kdcs := make(map[int]string)
-	var count int
-
+func (c *Config) GetKpasswdServers(realm string, tcp bool) ([]string, error) {
 	// Use DNS to resolve kerberos SRV records if configured to do so in krb5.conf.
 	if c.LibDefaults.DNSLookupKDC {
 		proto := "udp"
 		if tcp {
 			proto = "tcp"
 		}
-		c, addrs, err := dnsutils.OrderedSRV("kpasswd", proto, realm)
+		index, addrs, err := dnsutils.OrderedSRV("kpasswd", proto, realm)
 		if err != nil {
-			return count, kdcs, err
+			return nil, err
 		}
-		if c < 1 {
-			c, addrs, err = dnsutils.OrderedSRV("kerberos-adm", proto, realm)
+		if index < 1 {
+			index, addrs, err = dnsutils.OrderedSRV("kerberos-adm", proto, realm)
 			if err != nil {
-				return count, kdcs, err
+				return nil, err
 			}
 		}
 		if len(addrs) < 1 {
-			return count, kdcs, fmt.Errorf("no kpasswd or kadmin SRV records found for realm %s", realm)
+			return nil, fmt.Errorf("no kpasswd or kadmin SRV records found for realm %s", realm)
 		}
-		count = c
-		for k, v := range addrs {
-			kdcs[k] = strings.TrimRight(v.Target, ".") + ":" + strconv.Itoa(int(v.Port))
-		}
-	} else {
-		// Get the KDCs from the krb5.conf an order them randomly for preference.
-		var ks []string
-		var ka []string
-		for _, r := range c.Realms {
-			if r.Realm == realm {
-				ks = r.KPasswdServer
-				ka = r.AdminServer
-				break
-			}
-		}
-		if len(ks) < 1 {
-			for _, k := range ka {
-				h, _, err := net.SplitHostPort(k)
-				if err != nil {
-					continue
-				}
-				ks = append(ks, h+":464")
-			}
-		}
-		count = len(ks)
-		if count < 1 {
-			return count, kdcs, fmt.Errorf("no kpasswd or kadmin defined in configuration for realm %s", realm)
-		}
-		kdcs = randServOrder(ks)
+		return srvAddrsInOrder(index, addrs), nil
 	}
-	return count, kdcs, nil
+	// Get the kpasswd servers from the krb5.conf and order them randomly for preference.
+	var ks []string
+	var ka []string
+	for _, r := range c.Realms {
+		if r.Realm == realm {
+			ks = r.KPasswdServer
+			ka = r.AdminServer
+			break
+		}
+	}
+	if len(ks) < 1 {
+		for _, k := range ka {
+			h, _, err := net.SplitHostPort(k)
+			if err != nil {
+				continue
+			}
+			ks = append(ks, h+":464")
+		}
+	}
+	if len(ks) < 1 {
+		return nil, fmt.Errorf("no kpasswd or kadmin defined in configuration for realm %s", realm)
+	}
+	return randServOrder(ks), nil
 }
 
-func randServOrder(ks []string) map[int]string {
-	kdcs := make(map[int]string)
-	count := len(ks)
-	i := 1
-	if count > 1 {
-		l := len(ks)
-		for l > 0 {
-			ri := rand.Intn(l)
-			kdcs[i] = ks[ri]
-			if l > 1 {
-				// Remove the entry from the source slice by swapping with the last entry and truncating
-				ks[len(ks)-1], ks[ri] = ks[ri], ks[len(ks)-1]
-				ks = ks[:len(ks)-1]
-				l = len(ks)
-			} else {
-				l = 0
-			}
-			i++
+// srvAddrsInOrder flattens the dnsutils.OrderedSRV map (keyed 1..index) into
+// a slice of host:port strings preserving the priority/weight order.
+func srvAddrsInOrder(index int, addrs map[int]*net.SRV) []string {
+	out := make([]string, 0, len(addrs))
+	for i := 1; i <= index; i++ {
+		s, ok := addrs[i]
+		if !ok {
+			continue
 		}
-	} else {
-		kdcs[i] = ks[0]
+		out = append(out, strings.TrimRight(s.Target, ".")+":"+strconv.Itoa(int(s.Port)))
 	}
-	return kdcs
+	return out
+}
+
+func randServOrder(ks []string) []string {
+	if len(ks) <= 1 {
+		out := make([]string, len(ks))
+		copy(out, ks)
+		return out
+	}
+	out := make([]string, 0, len(ks))
+	work := make([]string, len(ks))
+	copy(work, ks)
+	for len(work) > 0 {
+		ri := rand.Intn(len(work))
+		out = append(out, work[ri])
+		work[len(work)-1], work[ri] = work[ri], work[len(work)-1]
+		work = work[:len(work)-1]
+	}
+	return out
 }
