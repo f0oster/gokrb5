@@ -37,12 +37,15 @@ func NewAuthenticator(realm string, cname PrincipalName) (Authenticator, error) 
 	}
 	t := time.Now().UTC()
 	return Authenticator{
-		AVNO:      iana.PVNO,
-		CRealm:    realm,
-		CName:     cname,
-		Cksum:     Checksum{},
-		Cusec:     int((t.UnixNano() / int64(time.Microsecond)) - (t.Unix() * 1e6)),
-		CTime:     t,
+		AVNO:   iana.PVNO,
+		CRealm: realm,
+		CName:  cname,
+		Cksum:  Checksum{},
+		Cusec:  int((t.UnixNano() / int64(time.Microsecond)) - (t.Unix() * 1e6)),
+		CTime:  t,
+		// Mask matches MIT and Heimdal's krb5_generate_seq_number. Older MIT
+		// acceptors store the initial seq in a signed int32 (regression in
+		// MIT commit abcfdaff, 2008) and reject values with bit 31 set.
 		SeqNumber: seq.Int64() & 0x3fffffff,
 	}, nil
 }
@@ -53,6 +56,9 @@ func (a *Authenticator) GenerateSeqNumberAndSubKey(keyType int32, keySize int) e
 	if err != nil {
 		return err
 	}
+	// Mask matches MIT and Heimdal's krb5_generate_seq_number. Older MIT
+	// acceptors store the initial seq in a signed int32 (regression in
+	// MIT commit abcfdaff, 2008) and reject values with bit 31 set.
 	a.SeqNumber = seq.Int64() & 0x3fffffff
 	//Generate subkey value
 	sk := make([]byte, keySize, keySize)

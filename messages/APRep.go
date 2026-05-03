@@ -105,6 +105,9 @@ func NewAPRep(sessionKey types.EncryptionKey, auth types.Authenticator) (APRep, 
 			KeyType:  sessionKey.KeyType,
 			KeyValue: sk,
 		},
+		// Mask matches MIT and Heimdal's krb5_generate_seq_number. Older MIT
+		// acceptors store the initial seq in a signed int32 (regression in
+		// MIT commit abcfdaff, 2008) and reject values with bit 31 set.
 		SequenceNumber: seq.Int64() & 0x3fffffff,
 	}
 	plain, err := enc.Marshal()
