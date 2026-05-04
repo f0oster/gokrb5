@@ -216,7 +216,10 @@ func SetSPNEGOHeader(cl *client.Client, r *http.Request, spn string) error {
 	spt := SPNEGOToken{
 		Init: true,
 		NegTokenInit: NegTokenInit{
-			MechTypes:      []asn1.ObjectIdentifier{gssapi.OIDKRB5.OID()},
+			MechTypes: []asn1.ObjectIdentifier{
+				gssapi.OIDKRB5.OID(),
+				gssapi.OIDMSLegacyKRB5.OID(),
+			},
 			MechTokenBytes: mechBytes,
 		},
 	}

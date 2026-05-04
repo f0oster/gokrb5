@@ -54,7 +54,10 @@ func (i *Initiator) Step(input []byte) ([]byte, error) {
 		spt := &SPNEGOToken{
 			Init: true,
 			NegTokenInit: NegTokenInit{
-				MechTypes:      []asn1.ObjectIdentifier{gssapi.OIDKRB5.OID()},
+				MechTypes: []asn1.ObjectIdentifier{
+					gssapi.OIDKRB5.OID(),
+					gssapi.OIDMSLegacyKRB5.OID(),
+				},
 				MechTokenBytes: mechBytes,
 			},
 		}
@@ -66,6 +69,14 @@ func (i *Initiator) Step(input []byte) ([]byte, error) {
 	}
 	if resp.NegState != asn1.Enumerated(NegStateAcceptCompleted) {
 		return nil, fmt.Errorf("SPNEGO NegState = %v, want accept-completed", resp.NegState)
+	}
+	// Confirm the acceptor selected one of the Kerberos OIDs we offered.
+	// RFC 4178 §4.2.2 makes supportedMech optional on subsequent
+	// NegTokenResp messages, so an absent field is accepted.
+	if len(resp.SupportedMech) > 0 &&
+		!resp.SupportedMech.Equal(gssapi.OIDKRB5.OID()) &&
+		!resp.SupportedMech.Equal(gssapi.OIDMSLegacyKRB5.OID()) {
+		return nil, fmt.Errorf("SPNEGO acceptor selected mech %s, initiator only supports Kerberos mechs", resp.SupportedMech.String())
 	}
 	if i.gss.Done() {
 		return nil, nil
