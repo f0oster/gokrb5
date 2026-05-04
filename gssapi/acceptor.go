@@ -149,9 +149,9 @@ type Acceptance struct {
 // mutual auth), the established SecurityContext, and the verified
 // client credentials.
 //
-// On verification failure the returned error is typically a
-// *messages.KRBError; callers serializing a KRB-ERROR mech token to
-// the initiator can recover it via errors.As().
+// AP-REQ verification errors that map to a Kerberos error code carry a
+// messages.KRBError; recover it via errors.As to serialise a KRB-ERROR
+// mech token back to the initiator.
 func (a *Acceptor) Accept(mechToken []byte, opts ...AcceptOption) (*Acceptance, error) {
 	oid, tokID, inner, err := UnmarshalMechToken(mechToken)
 	if err != nil {
